@@ -4,27 +4,32 @@ from supabase import create_client
 
 def run_gold_brain():
     # 1. Setup Connection to Supabase
-    # These match the names you entered in GitHub Secrets
     url = os.environ.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_KEY")
     
     if not url or not key:
-        print("Error: SUPABASE_URL or SUPABASE_KEY not found in environment.")
+        print("Error: SUPABASE_URL or SUPABASE_KEY missing.")
         return
 
     supabase = create_client(url, key)
 
-    # 2. Fetch Gold Price (GC=F is the symbol for Gold Futures)
-    print("Fetching gold price...")
-    gold_data = yf.Ticker("GC=F")
-    current_price = gold_data.history(period="1d")['Close'].iloc[-1]
+    # 2. Fetch Gold Price and Check Market Status
+    print("Checking gold market...")
+    gold_ticker = yf.Ticker("GC=F")
+    history = gold_ticker.history(period="1d")
+
+    # If history is empty, the market is closed (Weekend/Holiday)
+    if history.empty:
+        print("Market is currently CLOSED. No new data to save. Skipping...")
+        return
+
+    current_price = history['Close'].iloc[-1]
     
-    # 3. Simple Logic (Example: Buy if price is below a certain point)
-    # You can change this logic later!
+    # 3. Simple Logic
     signal = "HOLD"
-    if current_price < 2000:
+    if current_price < 2300: # Example threshold
         signal = "BUY"
-    elif current_price > 2500:
+    elif current_price > 2700:
         signal = "SELL"
 
     # 4. Save to Supabase
@@ -35,9 +40,8 @@ def run_gold_brain():
     }
 
     try:
-        # This sends the data to your 'gold_prices' table
-        response = supabase.table("gold_prices").insert(data).execute()
-        print(f"Success! Saved Gold Price: ${current_price:.2f} with signal: {signal}")
+        supabase.table("gold_prices").insert(data).execute()
+        print(f"Market is OPEN. Saved Price: ${current_price:.2f}")
     except Exception as e:
         print(f"Error saving to Supabase: {e}")
 
