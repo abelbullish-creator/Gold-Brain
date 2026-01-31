@@ -4,117 +4,87 @@ import pandas as pd
 from supabase import create_client
 
 def run_gold_brain():
-    # 1. Setup & Connection
+    # 1. SETUP & AUTHENTICATION
     url = os.environ.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_KEY")
+    if not url or not key:
+        print("Missing API Keys.")
+        return
     supabase = create_client(url, key)
 
+    # 2. DEEP HISTORICAL ANALYSIS (2-YEAR ITERATION)
+    print("Analyzing 2-year history for strategy weighting...")
     gold_ticker = yf.Ticker("GC=F")
-    
-    # --- PHASE 1: DEEP ITERATION (2-YEAR BACKTEST) ---
-    # We analyze historical success to weight our strategies
     hist_2y = gold_ticker.history(period="2y", interval="1d")
     
-    # Strategy Weighting (Simplified ICT/Price Action logic)
-    ict_weight = 0.5  # Default
-    pa_weight = 0.5   # Default
-    
-    # Logic: Check how many times price hit a 'Breakout' and continued vs reversed
-    # (In a full app, this would be a loop checking every day's success)
-    # For now, we calculate Volatility/Trend Strength to adjust weights
+    # Calculate Strategy Weights based on Market Environment
+    # If volatility is high, we weight ICT (Liquidity/SMC) higher.
+    # If trend is smooth, we weight Price Action (Breakouts) higher.
     volatility = hist_2y['Close'].pct_change().std()
-    if volatility > 0.015:
-        ict_weight += 0.2 # ICT often performs better in high volatility (liquidity sweeps)
-    else:
-        pa_weight += 0.2  # Price Action (Trend following) performs better in smooth markets
+    ict_weight = 0.7 if volatility > 0.012 else 0.4
+    pa_weight = 1.0 - ict_weight
 
-    # --- PHASE 2: PREPARATORY SUGGESTION (The Forecast) ---
-    # Looking at the next session's potential
-    df_recent = gold_ticker.history(period="5d", interval="60m")
-    current_price = df_recent['Close'].iloc[-1]
-    res_level = df_recent['High'].max()
-    sup_level = df_recent['Low'].min()
+    # 3. FETCH RECENT DATA FOR LIVE SIGNAL
+    # Use 60m interval for cleaner support/resistance levels
+    df = gold_ticker.history(period="5d", interval="60m")
+    if df.empty:
+        print("Market is closed. No live data.")
+        return
 
-    prep_box = f"FORECAST: Market bias weighted by {pa_weight:.1f} PA / {ict_weight:.1f} ICT. "
-    prep_box += f"Watch for Retest at {res_level:.2f} or {sup_level:.2f}."
+    # Define variables clearly to avoid NameError
+    current_price = float(df['Close'].iloc[-1])
+    res_level = float(df['High'].tail(24).max())
+    sup_level = float(df['Low'].tail(24).min())
+    
+    # 4. PREPARATORY PHASE (Suggestion Box)
+    lean = "BULLISH" if current_price > df['Close'].mean() else "BEARISH"
+    prep_msg = f"Weighted Bias: {pa_weight*100:.0f}% PA / {ict_weight*100:.0f}% ICT. "
+    prep_msg += f"Session Lean: {lean}. Watch for Breakout/Retest at {res_level:.2f}."
 
-    # --- PHASE 3: SIGNAL PHASE (Independent Execution) ---
-    # Independent of the Prep box. Sends every 15 mins via GitHub Actions.
+    # 5. SIGNAL PHASE (Independent Execution)
     signal = "HOLD"
-    entry = 0
-    tp = 0
-    sl = 0
+    entry, tp, sl, rrr = 0.0, 0.0, 0.0, 0.0
 
-    # Example Price Action Signal Logic
+    # Logic for Entry (Price Action Breakout)
     if current_price > res_level:
         signal = "BUY"
         entry = current_price
-        tp = entry + (entry * 0.01) # 1% Target
-        sl = entry - (entry * 0.005) # 0.5% Risk
+        tp = entry + (entry * 0.008) # 0.8% Target
+        sl = entry - (entry * 0.003) # 0.3% Risk
     elif current_price < sup_level:
         signal = "SELL"
         entry = current_price
-        tp = entry - (entry * 0.01)
-        sl = entry + (entry * 0.005)
+        tp = entry - (entry * 0.008)
+        sl = entry + (entry * 0.003)
 
-    # --- PHASE 4: SAVE TO SUPABASE (Two Separate Displays) ---
+    # 6. RISK-TO-REWARD CALCULATION
+    if signal != "HOLD":
+        risk = abs(entry - sl)
+        reward = abs(tp - entry)
+        rrr = reward / risk if risk != 0 else 0
+        
+        # QUALITY FILTER: Only alert if RRR is 2.0 or higher
+        if rrr < 2.0:
+            signal = "INSUFFICIENT RRR"
+
+    # 7. SAVE TO SUPABASE
     data = {
-        "price": float(current_price),
+        "price": current_price,
         "signal": signal,
-        "entry_price": float(entry) if entry > 0 else None,
-        "take_profit": float(tp) if tp > 0 else None,
-        "stop_loss": float(sl) if sl > 0 else None,
-        "preparatory_suggestion": prep_box,
-        "strategy_weights": f"PA:{pa_weight} ICT:{ict_weight}",
-        "asset": "Gold"
+        "asset": "Gold",
+        "entry_price": entry if entry > 0 else None,
+        "take_profit": tp if tp > 0 else None,
+        "stop_loss": sl if sl > 0 else None,
+        "rrr": round(rrr, 2),
+        "preparatory_suggestion": prep_msg,
+        "notes": f"Vol: {volatility:.4f} | ICT-W: {ict_weight}"
     }
 
     try:
         supabase.table("gold_prices").insert(data).execute()
-        print(f"SIGNAL: {signal} | PREP: {prep_box}")
+        print(f"Update Successful: {signal} at ${current_price:.2f} (RRR: {rrr:.2f})")
     except Exception as e:
         print(f"Database Error: {e}")
 
 if __name__ == "__main__":
     run_gold_brain()
-# ... (Previous imports and Deep Iteration Phase) ...
-
-    # --- PHASE 3: SIGNAL PHASE (with RRR) ---
-    signal = "HOLD"
-    entry, tp, sl, rrr = 0, 0, 0, 0
-
-    if current_price > res_level:
-        signal = "BUY"
-        entry = current_price
-        # Dynamic TP/SL based on market structure (example: 1% TP, 0.4% SL)
-        tp = entry + (entry * 0.01)
-        sl = entry - (entry * 0.004)
-        
-        # Calculate Risk-to-Reward
-        risk = entry - sl
-        reward = tp - entry
-        rrr = reward / risk if risk != 0 else 0
-
-    elif current_price < sup_level:
-        signal = "SELL"
-        entry = current_price
-        tp = entry - (entry * 0.01)
-        sl = entry + (entry * 0.004)
-        
-        # Calculate Risk-to-Reward
-        risk = sl - entry
-        reward = entry - tp
-        rrr = reward / risk if risk != 0 else 0
-
-    # --- PHASE 4: SAVE TO SUPABASE ---
-    data = {
-        "price": float(current_price),
-        "signal": signal,
-        "entry_price": float(entry) if entry > 0 else None,
-        "take_profit": float(tp) if tp > 0 else None,
-        "stop_loss": float(sl) if sl > 0 else None,
-        "rrr": round(rrr, 2), # New Column
-        "preparatory_suggestion": prep_box,
-        "asset": "Gold"
-    }
-# ... (Rest of save logic) ...
