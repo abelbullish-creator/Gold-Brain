@@ -77,3 +77,44 @@ def run_gold_brain():
 
 if __name__ == "__main__":
     run_gold_brain()
+# ... (Previous imports and Deep Iteration Phase) ...
+
+    # --- PHASE 3: SIGNAL PHASE (with RRR) ---
+    signal = "HOLD"
+    entry, tp, sl, rrr = 0, 0, 0, 0
+
+    if current_price > res_level:
+        signal = "BUY"
+        entry = current_price
+        # Dynamic TP/SL based on market structure (example: 1% TP, 0.4% SL)
+        tp = entry + (entry * 0.01)
+        sl = entry - (entry * 0.004)
+        
+        # Calculate Risk-to-Reward
+        risk = entry - sl
+        reward = tp - entry
+        rrr = reward / risk if risk != 0 else 0
+
+    elif current_price < sup_level:
+        signal = "SELL"
+        entry = current_price
+        tp = entry - (entry * 0.01)
+        sl = entry + (entry * 0.004)
+        
+        # Calculate Risk-to-Reward
+        risk = sl - entry
+        reward = entry - tp
+        rrr = reward / risk if risk != 0 else 0
+
+    # --- PHASE 4: SAVE TO SUPABASE ---
+    data = {
+        "price": float(current_price),
+        "signal": signal,
+        "entry_price": float(entry) if entry > 0 else None,
+        "take_profit": float(tp) if tp > 0 else None,
+        "stop_loss": float(sl) if sl > 0 else None,
+        "rrr": round(rrr, 2), # New Column
+        "preparatory_suggestion": prep_box,
+        "asset": "Gold"
+    }
+# ... (Rest of save logic) ...
