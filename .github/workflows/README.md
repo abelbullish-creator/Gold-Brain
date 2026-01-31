@@ -1,3 +1,4 @@
+![Status](https://github.com/abelbullish-creator/Gold-Brain/actions/workflows/main.yml/badge.svg)
 # 🪙 Gold Brain Automation
 
 A Python-based automation that tracks gold prices and saves them to a Supabase database.
