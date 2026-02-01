@@ -207,9 +207,9 @@ def backtest_strategy(df, sma_len, rsi_len):
     return win_rate
     def backtest_strategy(df, sma_len, rsi_len):
     """
-    Actually tests if a specific SMA + RSI combo would have made money 
-    on the recent data (df). Returns the Win Rate (%).
+    Actually tests if a specific SMA + RSI combo would have made money.
     """
+    pass  # <--- Add this indented line to fix the error!
     # 1. Setup Indicators on the historical dataframe
     test_df = df.copy()
     test_df['SMA'] = test_df['Close'].rolling(window=sma_len).mean()
