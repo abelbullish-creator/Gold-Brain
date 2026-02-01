@@ -88,3 +88,39 @@ def run_gold_brain():
 
 if __name__ == "__main__":
     run_gold_brain()
+# ... (Previous imports) ...
+
+def run_gold_brain():
+    # ... (Setup and Data Fetch) ...
+    hist_2y = gold_ticker.history(period="2y", interval="1d")
+    
+    # --- NEW: FULL BACKTEST MODULE ---
+    # Simulate a simple version of our logic over 2 years
+    wins = 0
+    losses = 0
+    for i in range(20, len(hist_2y)):
+        window = hist_2y.iloc[i-20:i]
+        curr = hist_2y.iloc[i]
+        prev_high = window['High'].max()
+        # If price broke the 20-day high (Breakout Logic)
+        if curr['Close'] > prev_high:
+            # Check if it stayed up (Win) or crashed (Loss) the next day
+            if i + 1 < len(hist_2y):
+                next_day = hist_2y.iloc[i+1]
+                if next_day['Close'] > curr['Close']: wins += 1
+                else: losses += 1
+    
+    win_rate = (wins / (wins + losses)) * 100 if (wins + losses) > 0 else 0
+
+    # ... (Signal Logic remains the same) ...
+
+    # --- UPDATED SAVE DATA ---
+    data = {
+        "price": current_price,
+        "signal": signal,
+        "asset": "Gold",
+        "rrr": round(rrr, 2),
+        "preparatory_suggestion": prep_msg,
+        "notes": f"2Y WinRate: {win_rate:.1f}% | Vol: {volatility:.4f}"
+    }
+    # ... (Execute Insert) ...
