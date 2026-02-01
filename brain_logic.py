@@ -172,3 +172,101 @@ def run_gold_brain():
 
 if __name__ == "__main__":
     run_gold_brain()
+def backtest_strategy(df, sma_len, rsi_len):
+    """
+    Actually tests if a specific SMA + RSI combo would have made money 
+    on the recent data (df). Returns the Win Rate (%).
+    """
+    # 1. Setup Indicators
+    df = df.copy()
+    df['SMA'] = df['Close'].rolling(window=sma_len).mean()
+    
+    # RSI Calc
+    delta = df['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=rsi_len).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=rsi_len).mean()
+    df['RSI'] = 100 - (100 / (1 + (gain / loss)))
+
+    # 2. Simulate Trades (Vectorized Backtest)
+    # Buy Condition: Price > SMA AND RSI < 45 (Oversold in Trend)
+    df['Signal'] = np.where((df['Close'] > df['SMA']) & (df['RSI'] < 45), 1, 0)
+    
+    # Calculate returns for the next 3 candles (forward looking)
+    df['Future_Return'] = df['Close'].shift(-3) - df['Close']
+    
+    # Filter only the rows where we had a signal
+    trades = df[df['Signal'] == 1]
+    
+    if len(trades) == 0:
+        return 0 # No trades triggered, bad strategy
+        
+    # Win Rate = Percentage of trades that ended positive
+    wins = len(trades[trades['Future_Return'] > 0])
+    win_rate = (wins / len(trades)) * 100
+    
+    return win_rate
+    def backtest_strategy(df, sma_len, rsi_len):
+    """
+    Actually tests if a specific SMA + RSI combo would have made money 
+    on the recent data (df). Returns the Win Rate (%).
+    """
+    # 1. Setup Indicators
+    df = df.copy()
+    df['SMA'] = df['Close'].rolling(window=sma_len).mean()
+    
+    # RSI Calc
+    delta = df['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=rsi_len).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=rsi_len).mean()
+    df['RSI'] = 100 - (100 / (1 + (gain / loss)))
+
+    # 2. Simulate Trades (Vectorized Backtest)
+    # Buy Condition: Price > SMA AND RSI < 45 (Oversold in Trend)
+    df['Signal'] = np.where((df['Close'] > df['SMA']) & (df['RSI'] < 45), 1, 0)
+    
+    # Calculate returns for the next 3 candles (forward looking)
+    df['Future_Return'] = df['Close'].shift(-3) - df['Close']
+    
+    # Filter only the rows where we had a signal
+    trades = df[df['Signal'] == 1]
+    
+    if len(trades) == 0:
+        return 0 # No trades triggered, bad strategy
+        
+    # Win Rate = Percentage of trades that ended positive
+    wins = len(trades[trades['Future_Return'] > 0])
+    win_rate = (wins / len(trades)) * 100
+    
+    return win_rate
+    # Precise ICT Kill Zones (New York Time)
+london_kill_zone = (2 <= now_ny.hour <= 5)   # 2 AM - 5 AM
+ny_kill_zone = (8 <= now_ny.hour <= 11)     # 8 AM - 11 AM
+
+is_ict_prime_time = london_kill_zone or ny_kill_zone
+
+# Upgrade the Signal
+if signal == "BUY" and is_ict_prime_time:
+    signal = "STRONG BUY" # High probability institutional window
+def calculate_atr_trailing_stop(df, multiplier=2.5, current_pos="LONG"):
+    """
+    Calculates the dynamic exit level. 
+    In a real bot, you would pass the 'highest high' since the trade opened.
+    """
+    # Use the ATR already in your tactical dataframe
+    current_atr = df['ATR'].iloc[-1]
+    current_price = df['Close'].iloc[-1]
+    
+    if current_pos == "LONG":
+        # Look back at the highest point reached during the current trend
+        highest_point = df['High'].tail(10).max() 
+        trailing_sl = highest_point - (current_atr * multiplier)
+        # Ensure the stop only moves UP
+        return max(trailing_sl, df['Low'].iloc[-2]) 
+        
+    elif current_pos == "SHORT":
+        lowest_point = df['Low'].tail(10).min()
+        trailing_sl = lowest_point + (current_atr * multiplier)
+        # Ensure the stop only moves DOWN
+        return min(trailing_sl, df['High'].iloc[-2])
+    
+    return None
