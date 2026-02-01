@@ -210,6 +210,29 @@ def backtest_strategy(df, sma_len, rsi_len):
     Actually tests if a specific SMA + RSI combo would have made money 
     on the recent data (df). Returns the Win Rate (%).
     """
+    # 1. Setup Indicators on the historical dataframe
+    test_df = df.copy()
+    test_df['SMA'] = test_df['Close'].rolling(window=sma_len).mean()
+    
+    # RSI Calculation
+    delta = test_df['Close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=rsi_len).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=rsi_len).mean()
+    test_df['RSI'] = 100 - (100 / (1 + (gain / loss + 0.00001)))
+
+    # 2. Define Signal Logic (Buying when Price > SMA and RSI is Oversold)
+    test_df['Signal'] = np.where((test_df['Close'] > test_df['SMA']) & (test_df['RSI'] < 45), 1, 0)
+    
+    # 3. Calculate Results (Look 3 candles ahead)
+    test_df['Future_Return'] = test_df['Close'].shift(-3) - test_df['Close']
+    trades = test_df[test_df['Signal'] == 1]
+    
+    # 4. Return Win Rate
+    if len(trades) < 3: 
+        return 0 
+        
+    win_rate = (len(trades[trades['Future_Return'] > 0]) / len(trades)) * 100
+    return win_rate
     # 1. Setup Indicators
     df = df.copy()
     df['SMA'] = df['Close'].rolling(window=sma_len).mean()
