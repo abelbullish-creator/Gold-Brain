@@ -128,15 +128,20 @@ def run_gold_brain():
     lot_size = round(max(0.01, lot_size), 2)
 
     # Log Everything to Supabase
+   # G. Log Everything to Supabase (Optimized version)
     log_data = {
         "price": curr_p,
         "signal": signal,
         "asset": "Gold (XAU/USD)",
-        "notes": f"Size: {lot_size} | FVG: {fvg} | Sentiment: {news_bias} | DXY: {dxy_trend}",
-        "created_at": datetime.now(pytz.utc).isoformat()
+        "notes": f"Size: {lot_size} | FVG: {fvg} | Sentiment: {news_bias:.2f} | DXY: {dxy_trend}",
     }
-    supabase.table("gold_prices").insert(log_data).execute()
-    print(f"[{now_ny.strftime('%H:%M')}] {signal} at {curr_p} (Lots: {lot_size})")
+    
+    try:
+        # We removed 'created_at' so the Database handles the timestamp for us
+        supabase.table("gold_prices").insert(log_data).execute()
+        print(f"✅ [{now_ny.strftime('%H:%M')}] Logged {signal} at {curr_p}")
+    except Exception as e:
+        print(f"❌ Database Error: {e}")
 
 if __name__ == "__main__":
     run_gold_brain()
