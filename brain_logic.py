@@ -96,11 +96,31 @@ def backtest_deep_dive(df, sma, rsi, atr_mult):
 # --- 3. MASTER SENTINEL LOGIC ---
 
 def run_gold_brain():
-    # A. Setup & Connections
-    supabase = create_client(os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_KEY"))
-    gold = yf.Ticker("GC=F")
-    dxy = yf.Ticker("DX-Y.NYB")
+import os
+import requests
+
+def get_real_time_spot_price():
+    # 1. Pull the API Key from your GitHub Secrets
+    api_key = os.environ.get("TRADERMADE_API_KEY")
     
+    # 2. Target the XAU/USD (Gold Spot) endpoint
+    url = f"https://marketdata.tradermade.com/api/v1/live?currency=XAUUSD&api_key={api_key}"
+    
+    try:
+        response = requests.get(url, timeout=10)
+        data = response.json()
+        
+        # 3. Extract the 'mid' price (the average of current Buy/Sell)
+        # This will return the true spot price (e.g., 4667.0)
+        spot_price = data['quotes'][0]['mid']
+        
+        print(f"🎯 Verified Spot Price: {spot_price}")
+        return float(spot_price)
+        
+    except Exception as e:
+        print(f"❌ Real-time feed error: {e}")
+        return None
+        
     tz_ny = pytz.timezone('America/New_York')
     now_ny = datetime.now(tz_ny)
     day, hour = now_ny.weekday(), now_ny.hour
