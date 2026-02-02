@@ -1,13 +1,3 @@
-def run_gold_brain():
-    # --- INTERNAL HEALTH CHECK ---
-    print("🔍 System Check...")
-    if not os.environ.get("SUPABASE_URL") or not os.environ.get("SUPABASE_KEY"):
-        print("❌ CRITICAL: Environment variables missing!")
-        return
-    # --- END CHECK ---
-    
-    supabase = create_client(os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_KEY"))
-    # ... rest of your code ...
 name: Gold Brain Automation
 
 on:
