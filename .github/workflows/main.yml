@@ -17,8 +17,8 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install dependencies
-        run: pip install pandas yfinance supabase
+     - name: Install dependencies
+        run: pip install pandas yfinance supabase requests pytz numpy
 
       - name: Run Gold Bot
         env:
