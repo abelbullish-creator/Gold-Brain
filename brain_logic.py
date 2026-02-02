@@ -3,145 +3,232 @@ import requests
 import numpy as np
 import pandas as pd
 import yfinance as yf
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 from supabase import create_client
 
-# --- ULTIMATE SETTINGS ---
-RISK_PER_TRADE_PCT = 0.01  # Risk 1% of account per trade
-ACCOUNT_BALANCE = 10000    # Initial or current balance
-GOLD_CONTRACT_SIZE = 100   # Standard GC=F lot size (100 oz)
+# --- CONFIGURATION ---
+RISK_PCT = 0.01          # Risk 1% of account per trade
+BALANCE = 10000          # Base balance for calculation
+CONTRACT_SIZE = 100      # Gold standard lot size (100 oz)
 
-# --- 1. HELPERS & MEMORY (Restored & Enhanced) ---
+# --- 1. INTELLIGENCE & DIAGNOSTICS ---
 
 def get_sentinel_memory(supabase):
-    """Fetches current 'best' parameters from past learning sessions."""
+    """Fetches the bot's optimized parameters from the database."""
     try:
         res = supabase.table("sentinel_memory").select("*").eq("id", 1).execute()
-        if res.data: return res.data[0]
+        # Default starting intelligence if memory is empty
+        return res.data[0] if res.data else {"sma_len": 50, "rsi_len": 14, "vol_mult": 2.0, "win_rate": 0, "suggestion": "None"}
     except Exception as e:
-        print(f"[Memory Warning] {e}")
-    return {"sma_len": 50, "rsi_len": 14, "vol_mult": 1.5, "win_rate": 0}
+        print(f"[Memory Warning] Using defaults: {e}")
+        return {"sma_len": 50, "rsi_len": 14, "vol_mult": 2.0, "win_rate": 0, "suggestion": "Error fetching memory"}
+
+def diagnostic_check(win_rate, trades_count):
+    """The 'Room for Improvement' - analyzes flaws in the strategy."""
+    if trades_count < 10:
+        return "INSUFFICIENT DATA: Market too quiet to validate strategy."
+    if win_rate < 40:
+        return "CRITICAL: Strategy failing. Suggest increasing SMA length to filter noise."
+    if win_rate > 85:
+        return "WARNING: Over-fitting detected. Results may not hold in high volatility."
+    return "SYSTEM HEALTHY: Parameters are aligned with market regime."
 
 def get_market_sentiment():
-    """AI News Bias: Bullish/Bearish score from -1 to 1."""
+    """Fetches AI Sentiment Score (-1 to 1) from News API."""
     api_key = os.environ.get("NEWS_API_KEY") 
     if not api_key: return 0 
     url = f"https://newsapi.org/v2/everything?q=Gold+XAU+USD&language=en&sortBy=publishedAt&apiKey={api_key}"
     try:
         resp = requests.get(url, timeout=5).json()
-        articles = resp.get('articles', [])[:12]
-        bullish_k = ['inflation', 'weak dollar', 'rate cut', 'geopolitical', 'gold rally', 'safe haven']
-        bearish_k = ['rate hike', 'strong dollar', 'hawkish', 'recovery', 'gold fall', 'unemployment drop']
-        score = sum(0.2 for a in articles if any(k in (a['title'] or "").lower() for k in bullish_k))
-        score -= sum(0.2 for a in articles if any(k in (a['title'] or "").lower() for k in bearish_k))
-        return max(-1, min(1, score))
+        articles = resp.get('articles', [])[:10]
+        # Analyze titles for keywords
+        text_blob = " ".join([(a['title'] or "") for a in articles]).lower()
+        bulls = text_blob.count('inflation') + text_blob.count('cut') + text_blob.count('rally') + text_blob.count('record')
+        bears = text_blob.count('hike') + text_blob.count('strong') + text_blob.count('fall') + text_blob.count('drop')
+        
+        # Avoid division by zero
+        total = bulls + bears
+        return round((bulls - bears) / total, 2) if total > 0 else 0
     except: return 0
 
-# --- 2. STRATEGY & RISK CORE ---
-
 def detect_fvg(df):
-    """Identifies ICT Fair Value Gaps (Institutional Imbalance)."""
-    # Bullish FVG: Current Low > High of 2 candles ago
+    """Detects Institutional Fair Value Gaps (FVG)."""
+    if len(df) < 3: return None
+    # Bullish FVG: Low of candle 1 > High of candle 3 (Inverse indexing)
     if df['Low'].iloc[-1] > df['High'].iloc[-3]: return "BULLISH"
-    # Bearish FVG: Current High < Low of 2 candles ago
+    # Bearish FVG: High of candle 1 < Low of candle 3
     if df['High'].iloc[-1] < df['Low'].iloc[-3]: return "BEARISH"
     return None
 
-def backtest_strategy(df, sma_len, rsi_len):
-    """Simulates performance for the learning loop."""
+# --- 2. DEEP LEARNING ENGINE (2-Year Backtest) ---
+
+def backtest_deep_dive(df, sma, rsi, atr_mult):
+    """
+    Simulates the strategy over 2 years of data.
+    Note: Uses Daily data for stability as 15m data is limited to 60 days by API.
+    """
     d = df.copy()
-    d['SMA'] = d['Close'].rolling(sma_len).mean()
+    # Indicators
+    d['SMA'] = d['Close'].rolling(sma).mean()
+    
+    # RSI Calculation
     delta = d['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(rsi_len).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(rsi_len).mean()
+    gain = (delta.where(delta > 0, 0)).rolling(rsi).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(rsi).mean()
     d['RSI'] = 100 - (100 / (1 + (gain / (loss + 0.00001))))
     
-    # Entry: Price > SMA & RSI < 45 (Buying the dip in a trend)
+    # Logic: Buy on Trend (Close > SMA) + Oversold Dip (RSI < 45)
     d['Signal'] = np.where((d['Close'] > d['SMA']) & (d['RSI'] < 45), 1, 0)
-    d['Result'] = d['Close'].shift(-4) - d['Close'] # 4-candle lookahead
+    
+    # Outcome: Did price move favorably by 'atr_mult' ATRs within 5 candles?
+    d['ATR'] = (d['High'] - d['Low']).rolling(14).mean()
+    d['Target'] = d['Close'] + (d['ATR'] * atr_mult)
+    d['Outcome'] = np.where(d['Close'].shift(-5) > d['Target'], 1, 0)
+    
     trades = d[d['Signal'] == 1]
-    return (len(trades[trades['Result'] > 0]) / len(trades) * 100) if len(trades) > 2 else 0
+    count = len(trades)
+    if count < 5: return 0, 0 # Not enough trades to judge
+    
+    win_rate = (trades['Outcome'].sum() / count) * 100
+    return win_rate, count
 
-# --- 3. THE MASTER LOGIC ---
+# --- 3. MASTER SENTINEL LOGIC ---
 
 def run_gold_brain():
-    # A. Setup
+    # A. Setup & Connections
     supabase = create_client(os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_KEY"))
     gold = yf.Ticker("GC=F")
-    dxy = yf.Ticker("DX-Y.NYB") # Dollar Index for Correlation
+    dxy = yf.Ticker("DX-Y.NYB")
     
     tz_ny = pytz.timezone('America/New_York')
     now_ny = datetime.now(tz_ny)
     day, hour = now_ny.weekday(), now_ny.hour
     
-    # Precise Market Hours: Sun 6pm - Fri 5pm ET (Closed Sat & Daily 5-6pm break)
+    # B. Market Schedule (Sun 6pm - Fri 5pm ET)
+    # This prevents the bot from trading when the market is literally closed.
     is_market_open = not (day == 5 or (day == 4 and hour >= 17) or (day == 6 and hour < 18) or hour == 17)
 
-    # Fetch Data
+    # C. Data Ingestion
+    # Live Data (Short term for signals)
     df = gold.history(period="5d", interval="15m")
-    daily_df = gold.history(period="90d", interval="1d")
+    
+    # Learning Data (Long term for optimization - 2 Years)
+    daily_df = gold.history(period="2y", interval="1d")
+    
+    # Correlation Data (DXY)
     dxy_df = dxy.history(period="5d", interval="15m")
 
-    # --- PHASE 1: THE LEARNING LOOP (Runs when market is closed) ---
+    # --- PHASE 1: DEEP LEARNING (Runs when market is CLOSED) ---
     if not is_market_open:
-        print(f"SENTINEL: Optimization Mode Initiated ({now_ny.strftime('%A %H:%M')})...")
-        best_cfg = get_sentinel_memory(supabase) # Corrected NameError fix
+        print(f"SENTINEL: Market Closed ({now_ny.strftime('%H:%M')}). Running Deep 2-Year Optimization...")
+        best_cfg = get_sentinel_memory(supabase)
+        current_best_wr = best_cfg.get("win_rate", 0)
         
-        for s_len in [20, 50, 100, 200]:
-            for r_len in [10, 14, 21]:
-                wr = backtest_strategy(daily_df, s_len, r_len)
-                if wr > best_cfg.get("win_rate", 0):
-                    best_cfg = {"id": 1, "sma_len": s_len, "rsi_len": r_len, "vol_mult": 1.6, "win_rate": wr}
+        # Testing massive combinations (The "Curve")
+        for s in [20, 50, 100, 200]:
+            for r in [10, 14, 21]:
+                for a in [1.5, 2.0, 3.0]: # Testing strict vs loose stops
+                    wr, count = backtest_deep_dive(daily_df, s, r, a)
+                    
+                    # If we find a better setting, save it
+                    if wr > current_best_wr:
+                        current_best_wr = wr
+                        diag = diagnostic_check(wr, count) # Self-analysis
+                        best_cfg = {
+                            "id": 1, 
+                            "sma_len": s, 
+                            "rsi_len": r, 
+                            "vol_mult": a, 
+                            "win_rate": wr, 
+                            "suggestion": diag
+                        }
         
+        # Update the Brain
         supabase.table("sentinel_memory").upsert(best_cfg).execute()
+        print(f"OPTIMIZATION COMPLETE. New Best Win Rate: {current_best_wr}%")
         return
 
-    # --- PHASE 2: LIVE EXECUTION (The Professional Trader) ---
+    # --- PHASE 2: LIVE EXECUTION (15-Minute Logic) ---
     mem = get_sentinel_memory(supabase)
     curr_p = float(df['Close'].iloc[-1])
     
-    # Advanced Indicators
-    df['SMA'] = df['Close'].rolling(int(mem['sma_len'])).mean()
-    df['ATR'] = (df['High'] - df['Low']).rolling(14).mean()
+    # 1. Technical Analysis
+    sma = df['Close'].rolling(int(mem['sma_len'])).mean().iloc[-1]
     
-    # ICT Confluences
+    # 2. Context Analysis (The "Box" for Prep Info)
+    # Check DXY Trend (Inverse Correlation)
+    dxy_trend = "Bearish" if dxy_df['Close'].iloc[-1] < dxy_df['Close'].iloc[-5] else "Bullish"
+    
+    # Check Trend Bias
+    trend_bias = "UP" if curr_p > sma else "DOWN"
+    
+    # Check for "Retest" (Price is touching SMA)
+    dist_to_sma = abs(curr_p - sma)
+    is_retest = dist_to_sma < (curr_p * 0.001) # Within 0.1% range
+    
+    # FVG & Sentiment
     fvg = detect_fvg(df)
-    is_prime = (2 <= now_ny.hour <= 5) or (8 <= now_ny.hour <= 11) # Killzones
-    dxy_trend = "DOWN" if dxy_df['Close'].iloc[-1] < dxy_df['Close'].iloc[-5] else "UP"
     news_bias = get_market_sentiment()
+    
+    # Construct the "Preparation Box" note
+    context_note = (
+        f"Bias: {trend_bias} | DXY: {dxy_trend} | FVG: {fvg} | "
+        f"Retest: {is_retest} | AI Confidence: {mem['win_rate']:.1f}%"
+    )
 
-    # Decision Engine: The "High Probability" Filter
-    signal = "HOLD"
-    if curr_p > df['SMA'].iloc[-1] and dxy_trend == "DOWN" and is_prime:
-        if news_bias > 0 or fvg == "BULLISH":
+    # 3. Signal Generation (Nuanced Logic)
+    # Default State: Lean based on Trend
+    if trend_bias == "UP":
+        signal = "HOLD (Lean BUY - Waiting for Trigger)"
+    else:
+        signal = "HOLD (Lean SELL - Waiting for Trigger)"
+
+    # SIGNAL LOGIC
+    # BUY SCENARIO
+    if trend_bias == "UP" and dxy_trend == "Bearish":
+        # If we have a retest OR an FVG OR positive news
+        if is_retest or fvg == "BULLISH" or news_bias > 0.2:
             signal = "STRONG BUY"
         else:
-            signal = "BUY"
-    elif curr_p < df['SMA'].iloc[-1] and dxy_trend == "UP" and is_prime:
-        signal = "SELL"
+            signal = "BUY (Trend Follow)"
+            
+    # SELL SCENARIO
+    elif trend_bias == "DOWN" and dxy_trend == "Bullish":
+        if is_retest or fvg == "BEARISH" or news_bias < -0.2:
+            signal = "STRONG SELL"
+        else:
+            signal = "SELL (Trend Follow)"
 
-    # Risk Management: Dynamic Lot Sizing
-    # Formula: $$Size = \frac{Balance \times Risk\%}{ATR \times 2 \times 100}$$
-    atr_val = df['ATR'].iloc[-1]
-    lot_size = (ACCOUNT_BALANCE * RISK_PER_TRADE_PCT) / (atr_val * 2 * GOLD_CONTRACT_SIZE)
-    lot_size = round(max(0.01, lot_size), 2)
+    # CONFLICT SCENARIO (Gold Up, DXY Up -> DANGER)
+    elif trend_bias == "UP" and dxy_trend == "Bullish":
+        signal = "HOLD (CAUTION: DXY Conflict)"
 
-    # Log Everything to Supabase
-   # G. Log Everything to Supabase (Optimized version)
+    # 4. Risk Calculation (ATR Based)
+    # Calculate position size even for Holds, so you know what size TO take
+    atr = (df['High'] - df['Low']).rolling(14).mean().iloc[-1]
+    risk_sl_dist = atr * mem['vol_mult'] # Dynamic Stop Loss distance
+    
+    if risk_sl_dist > 0:
+        lot_size = (BALANCE * RISK_PCT) / (risk_sl_dist * CONTRACT_SIZE)
+        lot_size = round(max(0.01, lot_size), 2)
+    else:
+        lot_size = 0.01
+
+    # 5. Logging to Supabase
     log_data = {
         "price": curr_p,
-        "signal": signal,
-        "asset": "Gold (XAU/USD)",
-        "notes": f"Size: {lot_size} | FVG: {fvg} | Sentiment: {news_bias:.2f} | DXY: {dxy_trend}",
+        "signal": signal,       # The Command
+        "asset": "XAU/USD",
+        "notes": context_note + f" | Rec. Lots: {lot_size}",  # The Prep Box
     }
     
     try:
-        # We removed 'created_at' so the Database handles the timestamp for us
+        # DB handles timestamp automatically
         supabase.table("gold_prices").insert(log_data).execute()
-        print(f"✅ [{now_ny.strftime('%H:%M')}] Logged {signal} at {curr_p}")
+        print(f"✅ LOGGED: {signal} @ {curr_p} | {context_note}")
     except Exception as e:
-        print(f"❌ Database Error: {e}")
+        print(f"❌ DB Error: {e}")
 
 if __name__ == "__main__":
     run_gold_brain()
