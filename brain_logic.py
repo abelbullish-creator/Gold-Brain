@@ -13,7 +13,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# ================= 2. MARKET GUARD (RECOVERED) =================
+# ================= 2. MARKET GUARD =================
 def is_market_open():
     """Gold trades Sun 6PM - Fri 5PM ET."""
     tz = pytz.timezone('America/New_York')
@@ -25,10 +25,9 @@ def is_market_open():
     if day == 4 and current_time >= time(17, 0): return False 
     return True
 
-# ================= 3. DATA & PERFORMANCE (RECOVERED) =================
+# ================= 3. DATA & PERFORMANCE =================
 
 def get_live_price():
-    """Dual-source price fetching for reliability."""
     try:
         url = "https://data-asg.goldprice.org/dbXRates/USD"
         res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5)
@@ -39,7 +38,6 @@ def get_live_price():
         except: return None
 
 def get_market_metrics(sma_len, rsi_len):
-    """Calculates SMA, RSI, and Volume confirmation."""
     try:
         hist = yf.download("GC=F", period="100d", interval="1d", progress=False)
         if hist.empty: return None
@@ -65,7 +63,6 @@ def get_market_metrics(sma_len, rsi_len):
     except: return None
 
 def analyze_sentiment():
-    """Extracts news sentiment from financial RSS."""
     analyzer = SentimentIntensityAnalyzer()
     try:
         feed = feedparser.parse("https://www.investing.com/rss/news_95.rss")
@@ -74,7 +71,6 @@ def analyze_sentiment():
     except: return 0
 
 def calculate_performance():
-    """Calculates recent Win Rate for the DNA logs."""
     try:
         res = supabase.table("gold_prices").select("*").order("created_at", desc=True).limit(50).execute()
         df = pd.DataFrame(res.data)
@@ -91,10 +87,9 @@ def calculate_performance():
         return round((wins / total * 100), 2) if total > 0 else 0.0
     except: return 0.0
 
-# ================= 4. RECURSIVE LEARNING (NEW 4-FACTOR) =================
+# ================= 4. RECURSIVE LEARNING =================
 
 def update_recursive_weights():
-    """Evolves DNA by analyzing 100-trade batches."""
     try:
         res = supabase.table("gold_prices").select("*").order("created_at", desc=True).limit(100).execute()
         df = pd.DataFrame(res.data)
@@ -102,11 +97,12 @@ def update_recursive_weights():
 
         scores = {"trend": 0, "momentum": 0, "volume": 0, "sentiment": 0}
         for _, row in df.iterrows():
-            if "OPTIMAL" in str(row.get('notes', '')):
+            notes = str(row.get('notes', ''))
+            if "OPTIMAL" in notes:
                 scores["trend"] += 1
-                if "RSI" in str(row.get('notes', '')): scores["momentum"] += 1
-                if "Vol" in str(row.get('notes', '')): scores["volume"] += 1
-                if "News" in str(row.get('notes', '')): scores["sentiment"] += 1
+                if "RSI" in notes: scores["momentum"] += 1
+                if "Vol" in notes: scores["volume"] += 1
+                if "News" in notes: scores["sentiment"] += 1
 
         total = sum(scores.values()) + 1
         new_dna = {
@@ -158,12 +154,7 @@ def run_sentinel():
     suggestion = "BUY" if market_lean == "BULLISH" else "SELL"
     timing = "✅ OPTIMAL ENTRY" if conf >= 75 else "⚠️ BAD TIME TO TRADE"
 
-if __name__ == "__main__":
-    # In GitHub Actions, we just run the function once. 
-    # GitHub will wake us up again in 15 minutes.
-    run_sentinel()
-    
-    # E. Logging
+    # E. Logging (Now Indented correctly inside the function!)
     log_entry = {
         "price": price,
         "signal": f"{suggestion} ({conf}%)",
@@ -175,8 +166,10 @@ if __name__ == "__main__":
 
     try:
         supabase.table("gold_prices").insert(log_entry).execute()
+        
+        # Batch Check: Every 100 trades, trigger the learning cycle
         count_res = supabase.table("gold_prices").select("id", count="exact").execute()
-        if count_res.count % 100 == 0:
+        if count_res.count > 0 and count_res.count % 100 == 0:
             update_recursive_weights()
 
         print(f"📊 {timing} | {suggestion} ({conf}%) | Price: ${price}")
@@ -184,4 +177,5 @@ if __name__ == "__main__":
         print(f"❌ Execution Error: {e}")
 
 if __name__ == "__main__":
+    # GitHub Actions triggers this, it runs once, then exits.
     run_sentinel()
