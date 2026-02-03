@@ -1,8 +1,9 @@
 pandas
 yfinance
-vaderSentiment
 supabase
-feedparser
-pytz
 requests
+pytz
 numpy
+vaderSentiment
+beautifulsoup4
+feedparser
