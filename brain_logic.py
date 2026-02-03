@@ -66,7 +66,6 @@ def get_live_price():
         return round(float(res.json()["items"][0]["xauPrice"]), 2)
     except:
         try:
-            # Fallback: GLD ETF last price x 10
             return round(yf.Ticker("GLD").fast_info['last_price'] * 10, 2)
         except:
             return None
@@ -74,18 +73,14 @@ def get_live_price():
 def get_market_metrics(sma_len, rsi_len):
     """Calculates technical indicators with robust error handling."""
     try:
-        # Download 100 days of daily data for GC=F (Gold Futures)
         hist = yf.download("GC=F", period="100d", interval="1d", progress=False)
         if hist.empty: return None
         
-        # Squeeze removes extra MultiIndex levels if yfinance returns them
         closes = hist['Close'].squeeze()
         volumes = hist['Volume'].squeeze()
         
-        # SMA calculation
         sma = closes.rolling(window=sma_len).mean().iloc[-1]
         
-        # RSI Calculation using Wilder's Smoothing (Industry Standard)
         delta = closes.diff()
         gain = (delta.where(delta > 0, 0))
         loss = (-delta.where(delta < 0, 0))
@@ -96,7 +91,6 @@ def get_market_metrics(sma_len, rsi_len):
         rs = avg_gain / avg_loss
         rsi = 100 - (100 / (1 + rs))
         
-        # Volume Confirmation: Current volume > 20-period average volume
         vol_confirmed = volumes.iloc[-1] > volumes.rolling(20).mean().iloc[-1]
         
         return {
@@ -139,8 +133,16 @@ def run_sentinel():
     res = supabase.table("sentinel_memory").select("*").eq("id", 1).execute()
     settings = res.data[0] if res.data else {"sma_len": 50, "rsi_len": 14}
     
-    last_opt_str = settings.get('last_optimized', '2000-01-01T00:00:00+00:00')
-    last_opt = datetime.fromisoformat(last_opt_str)
+    # --- INTEGRATED FIX START: Robust type checking ---
+    last_opt_val = settings.get('last_optimized')
+
+    if isinstance(last_opt_val, str):
+        # Only parse if it's a string
+        last_opt = datetime.fromisoformat(last_opt_val)
+    else:
+        # If it's None or missing, use a very old date to trigger optimization
+        last_opt = datetime.fromisoformat('2000-01-01T00:00:00+00:00')
+    # --- INTEGRATED FIX END ---
     
     if (datetime.now(pytz.utc) - last_opt).days >= 1:
         optimize_bot()
@@ -155,7 +157,6 @@ def run_sentinel():
     elif price < m['sma'] and m['rsi'] > 65: base_signal = "SELL"
     
     final_signal = base_signal
-    # Strengthen signal if volume confirms and sentiment is significant
     if base_signal != "HOLD" and m['vol_confirmed'] and abs(sentiment) > 0.1:
         final_signal = f"STRONG {base_signal}"
 
