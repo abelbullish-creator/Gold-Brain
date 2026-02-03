@@ -1,9 +1,12 @@
 pandas
+numpy
 yfinance
 supabase
-requests
-pytz
-numpy
-vaderSentiment
-beautifulsoup4
 feedparser
+pytz
+aiohttp
+textblob
+scipy
+beautifulsoup4
+requests
+matplotlib
