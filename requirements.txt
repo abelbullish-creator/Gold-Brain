@@ -1,0 +1,8 @@
+pandas
+yfinance
+vaderSentiment
+supabase
+feedparser
+pytz
+requests
+numpy
