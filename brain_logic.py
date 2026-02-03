@@ -157,28 +157,12 @@ def run_sentinel():
     # D. Suggestion & Timing
     suggestion = "BUY" if market_lean == "BULLISH" else "SELL"
     timing = "✅ OPTIMAL ENTRY" if conf >= 75 else "⚠️ BAD TIME TO TRADE"
-import schedule
-import time
-
-def job():
-    print(f"🕒 Triggering Sentinel Analysis... [{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}]")
-    run_sentinel()
-
-# 1. Schedule the job every 15 minutes
-schedule.every(15).minutes.do(job)
-
-# 2. Optional: Run once immediately on startup so you don't wait 15 mins for the first log
-job()
 
 if __name__ == "__main__":
-    print("🚀 Sentinel Scheduler is active. Monitoring Gold every 15 minutes.")
+    # In GitHub Actions, we just run the function once. 
+    # GitHub will wake us up again in 15 minutes.
+    run_sentinel()
     
-    while True:
-        # Check if any scheduled task is ready to run
-        schedule.run_pending()
-        
-        # Sleep for 1 second to prevent high CPU usage
-        time.sleep(1)
     # E. Logging
     log_entry = {
         "price": price,
