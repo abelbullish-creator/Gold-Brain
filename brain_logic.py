@@ -36,8 +36,7 @@ def calculate_performance():
         if df.empty or 'price' not in df or len(df) < 2:
             return 0.0
 
-        # We compare the current signal's price to the price of the NEXT recorded entry
-        # price_change > 0 means the price went UP after the signal was recorded
+        # Compares the recorded signal's price to the most recent entry
         df['price_change'] = df['price'].shift(1) - df['price'] 
         
         wins = 0
@@ -67,28 +66,47 @@ def get_live_price():
         return round(float(res.json()["items"][0]["xauPrice"]), 2)
     except:
         try:
+            # Fallback: GLD ETF last price x 10
             return round(yf.Ticker("GLD").fast_info['last_price'] * 10, 2)
         except:
             return None
 
 def get_market_metrics(sma_len, rsi_len):
+    """Calculates technical indicators with robust error handling."""
     try:
+        # Download 100 days of daily data for GC=F (Gold Futures)
         hist = yf.download("GC=F", period="100d", interval="1d", progress=False)
         if hist.empty: return None
         
-        closes = hist['Close']
-        volumes = hist['Volume']
+        # Squeeze removes extra MultiIndex levels if yfinance returns them
+        closes = hist['Close'].squeeze()
+        volumes = hist['Volume'].squeeze()
         
-        sma = closes.rolling(sma_len).mean().iloc[-1]
+        # SMA calculation
+        sma = closes.rolling(window=sma_len).mean().iloc[-1]
+        
+        # RSI Calculation using Wilder's Smoothing (Industry Standard)
         delta = closes.diff()
-        gain = (delta.where(delta > 0, 0)).rolling(window=rsi_len).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(window=rsi_len).mean()
-        rsi = (100 - (100 / (1 + (gain / loss)))).iloc[-1]
+        gain = (delta.where(delta > 0, 0))
+        loss = (-delta.where(delta < 0, 0))
         
+        avg_gain = gain.ewm(alpha=1/rsi_len, adjust=False).mean()
+        avg_loss = loss.ewm(alpha=1/rsi_len, adjust=False).mean()
+        
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+        
+        # Volume Confirmation: Current volume > 20-period average volume
         vol_confirmed = volumes.iloc[-1] > volumes.rolling(20).mean().iloc[-1]
         
-        return {"sma": float(sma), "rsi": float(rsi), "vol_confirmed": vol_confirmed, "volume": float(volumes.iloc[-1])}
-    except:
+        return {
+            "sma": float(sma), 
+            "rsi": float(rsi.iloc[-1]), 
+            "vol_confirmed": bool(vol_confirmed), 
+            "volume": float(volumes.iloc[-1])
+        }
+    except Exception as e:
+        print(f"⚠️ Metrics Error: {e}")
         return None
 
 # ================= 5. SENTIMENT & OPTIMIZATION =================
@@ -112,7 +130,7 @@ def run_sentinel():
         print("💤 Market Closed.")
         return
 
-    # A. Fetch Data
+    # A. Fetch Data & Metrics
     price = get_live_price()
     sentiment = analyze_sentiment()
     win_rate = calculate_performance()
@@ -121,7 +139,9 @@ def run_sentinel():
     res = supabase.table("sentinel_memory").select("*").eq("id", 1).execute()
     settings = res.data[0] if res.data else {"sma_len": 50, "rsi_len": 14}
     
-    last_opt = datetime.fromisoformat(settings.get('last_optimized', '2000-01-01T00:00:00+00:00'))
+    last_opt_str = settings.get('last_optimized', '2000-01-01T00:00:00+00:00')
+    last_opt = datetime.fromisoformat(last_opt_str)
+    
     if (datetime.now(pytz.utc) - last_opt).days >= 1:
         optimize_bot()
 
@@ -129,12 +149,13 @@ def run_sentinel():
     m = get_market_metrics(settings['sma_len'], settings['rsi_len'])
     if not m or not price: return
 
-    # D. Decision Engine
+    # D. Decision Engine (Base + Multi-Factor)
     base_signal = "HOLD"
     if price > m['sma'] and m['rsi'] < 35: base_signal = "BUY"
     elif price < m['sma'] and m['rsi'] > 65: base_signal = "SELL"
     
     final_signal = base_signal
+    # Strengthen signal if volume confirms and sentiment is significant
     if base_signal != "HOLD" and m['vol_confirmed'] and abs(sentiment) > 0.1:
         final_signal = f"STRONG {base_signal}"
 
