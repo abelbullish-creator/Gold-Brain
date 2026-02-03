@@ -2,8 +2,8 @@ name: Gold Brain Automation
 
 on:
   schedule:
-    - cron: '*/15 * * * *'  # Runs every 15 minutes
-  workflow_dispatch:        # Allows you to click "Run workflow" manually for testing
+    - cron: '*/15 * * * *'  # GitHub handles the 15-min wait for you
+  workflow_dispatch:        # Keeps the "Run manually" button active
 
 jobs:
   run-logic:
@@ -16,15 +16,13 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          cache: 'pip' # This speeds up future runs by caching your libraries
+          cache: 'pip'
 
-      - name: Install Dependencies
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # Checks if the file exists before trying to install to avoid errors
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          # Safety: explicitly install feedparser just in case it's missing from your txt
-          pip install feedparser 
+          # We removed 'schedule' because GitHub is the scheduler now
+          pip install requests pandas yfinance vaderSentiment supabase feedparser pytz
 
       - name: Run Gold Bot
         env:
