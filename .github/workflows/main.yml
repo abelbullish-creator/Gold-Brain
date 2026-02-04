@@ -31,6 +31,6 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           # Telegram Secrets (Added for Live Alerts)
-          TELEGRAM_TOKEN: ${{8368825267:AAGVZL1NWc52NzuCzTypC-fxo3rednNjORc}}
-          TELEGRAM_CHAT_ID: ${{302733647}}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python brain_logic.py --mode single
