@@ -3,7 +3,7 @@ Gold Trading Sentinel v5.0 - Six Signal System
 Only displays: Strong Buy, Buy, Neutral Lean to Buy, Neutral Lean to Sell, Sell, Strong Sell
 """
 
-import osA
+import os
 import sys
 import asyncio
 import aiohttp
