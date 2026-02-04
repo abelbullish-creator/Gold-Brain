@@ -1415,20 +1415,18 @@ class GoldTradingSentinelV5:
             # 2. Check volatility
             volatility = await self.volatility_protection.check_volatility_spike()
             
-            # 3. Check if we should avoid trading
-            avoid_trading, reason = self.volatility_protection.should_avoid_trading(
-                market_status, volatility
-            )
-            
+            # 3. Market Protection Check
+            avoid_trading, reason = self.volatility_protection.should_avoid_trading(market_status, volatility)
             if avoid_trading and not market_status.is_open:
                 logger.warning(f"⚠️ Trading avoided: {reason}")
                 return self._create_safe_signal(market_status, volatility, reason)
             
-            # 4. # The extractor now manages its OWN session internally
-                 async with self.price_extractor as extractor:
+            # 4. Extract Real-Time Price
+            # The extractor handles its own aiohttp session internally in V5.0
+            async with self.price_extractor as extractor:
                 current_price = await extractor.get_refined_price()
                 
-                if not price:
+                if not current_price:
                     logger.error("Failed to get gold price")
                     return None
                 
