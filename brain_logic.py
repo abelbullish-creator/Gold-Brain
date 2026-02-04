@@ -1,6 +1,6 @@
 """
-Gold Trading Sentinel v4.0 - Pure Signals with Backtesting
-15-minute signals with 2-year backtesting for gold spot
+Gold Trading Sentinel v4.1 - Pure Signals with Real Market Status
+15-minute signals with live market status checking
 """
 
 import os
@@ -15,7 +15,7 @@ import json
 import re
 import time
 from typing import Optional, Dict, Tuple, List, Any
-from datetime import datetime, time, timedelta
+from datetime import datetime, time as dt_time, timedelta
 from dataclasses import dataclass
 import pytz
 from supabase import create_client, Client
@@ -27,6 +27,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import argparse
 from scipy import stats
+import holidays
 
 # Suppress warnings
 warnings.filterwarnings('ignore')
@@ -53,6 +54,15 @@ DEFAULT_INTERVAL = 900  # 15 minutes in seconds
 HIGH_CONFIDENCE_THRESHOLD = 85.0  # Signals above this are "high alert"
 BACKTEST_YEARS = 2
 
+# Global gold market schedule (as reference - will be verified live)
+GOLD_MARKET_HOURS = {
+    'sunday_open': dt_time(18, 0),  # 6 PM ET Sunday
+    'friday_close': dt_time(17, 0),  # 5 PM ET Friday
+    'daily_break_start': dt_time(17, 0),  # 5 PM ET
+    'daily_break_end': dt_time(18, 0),   # 6 PM ET
+    'weekend_closed': True
+}
+
 # ================= 2. DATA MODELS =================
 @dataclass
 class SentimentData:
@@ -74,6 +84,18 @@ class Signal:
     is_high_alert: bool = False  # High success rate signal
     rationale: Optional[Dict[str, float]] = None
     sources: Optional[List[str]] = None
+    market_status: Optional[str] = None  # Added market status info
+
+@dataclass
+class MarketStatus:
+    is_open: bool
+    reason: str
+    next_open: Optional[datetime] = None
+    next_close: Optional[datetime] = None
+    is_high_volume: bool = False
+    is_holiday: bool = False
+    verified_sources: List[str] = None
+    confidence: float = 0.0
 
 @dataclass
 class BacktestResult:
@@ -89,7 +111,366 @@ class BacktestResult:
     equity_curve: List[float]
     timestamps: List[datetime]
 
-# ================= 3. REAL GOLD SPOT PRICE EXTRACTOR =================
+# ================= 3. LIVE MARKET STATUS CHECKER =================
+class LiveMarketStatusChecker:
+    """Check if gold markets are actually open using multiple sources"""
+    
+    def __init__(self):
+        self.session = None
+        self.cache_duration = timedelta(minutes=5)
+        self._cache = {}
+        self.us_holidays = holidays.US(years=datetime.now().year)
+        self.verified_market_status = None
+        self.last_verification = None
+        
+    async def __aenter__(self):
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=1,
+            status_forcelist=[429, 500, 502, 503, 504]
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        self.session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=10)
+        )
+        return self
+        
+    async def __aexit__(self, *args):
+        if self.session:
+            await self.session.close()
+    
+    async def get_market_status(self) -> MarketStatus:
+        """Get current market status using multiple verification methods"""
+        cache_key = "market_status"
+        if cache_key in self._cache:
+            cached_time, status = self._cache[cache_key]
+            if datetime.now() - cached_time < self.cache_duration:
+                return status
+        
+        # Get current time in ET
+        now_et = datetime.now(TIMEZONE)
+        weekday = now_et.weekday()
+        current_time = now_et.time()
+        
+        # Check if today is a US holiday
+        is_holiday = now_et.date() in self.us_holidays
+        
+        # Initial status based on schedule
+        schedule_status = self._check_schedule_status(now_et, weekday, current_time, is_holiday)
+        
+        # Verify with live sources
+        verified_status = await self._verify_with_live_sources(schedule_status, now_et)
+        
+        # Cache the result
+        self._cache[cache_key] = (datetime.now(), verified_status)
+        self.verified_market_status = verified_status
+        self.last_verification = now_et
+        
+        return verified_status
+    
+    def _check_schedule_status(self, now_et: datetime, weekday: int, 
+                              current_time: dt_time, is_holiday: bool) -> MarketStatus:
+        """Check status based on known market schedule"""
+        
+        # Check if weekend
+        if weekday >= 5:  # Saturday (5) or Sunday (6)
+            next_open = self._get_next_market_open(now_et, is_holiday)
+            return MarketStatus(
+                is_open=False,
+                reason="Weekend (gold markets closed)",
+                next_open=next_open,
+                next_close=None,
+                is_holiday=is_holiday,
+                confidence=0.95
+            )
+        
+        # Check if holiday
+        if is_holiday:
+            next_open = self._get_next_market_open(now_et, is_holiday)
+            return MarketStatus(
+                is_open=False,
+                reason=f"US Holiday ({self.us_holidays.get(now_et.date())})",
+                next_open=next_open,
+                next_close=None,
+                is_holiday=True,
+                confidence=0.90
+            )
+        
+        # Check daily trading hours
+        # Gold futures (GC) trade nearly 24/5 with a break
+        if current_time < dt_time(18, 0) and weekday == 6:  # Sunday before 6 PM
+            return MarketStatus(
+                is_open=False,
+                reason="Sunday pre-market (opens at 6 PM ET)",
+                next_open=now_et.replace(hour=18, minute=0, second=0, microsecond=0),
+                next_close=now_et.replace(hour=17, minute=0, second=0, microsecond=0) + timedelta(days=5),
+                confidence=0.85
+            )
+        
+        # Daily break (5 PM - 6 PM ET)
+        if dt_time(17, 0) <= current_time < dt_time(18, 0):
+            return MarketStatus(
+                is_open=False,
+                reason="Daily maintenance break (5-6 PM ET)",
+                next_open=now_et.replace(hour=18, minute=0, second=0, microsecond=0),
+                next_close=now_et.replace(hour=17, minute=0, second=0, microsecond=0) + timedelta(days=1),
+                confidence=0.90
+            )
+        
+        # Normal trading hours (Sunday 6 PM to Friday 5 PM ET)
+        is_open = True
+        reason = "Markets open (24/5 with daily break)"
+        
+        # Calculate next break/close
+        if current_time < dt_time(17, 0):
+            next_close = now_et.replace(hour=17, minute=0, second=0, microsecond=0)
+        else:
+            next_close = now_et.replace(hour=17, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        
+        # Calculate next open (if currently in break or closed)
+        next_open = None
+        if not is_open:
+            next_open = self._get_next_market_open(now_et, is_holiday)
+        
+        return MarketStatus(
+            is_open=is_open,
+            reason=reason,
+            next_open=next_open,
+            next_close=next_close,
+            is_holiday=is_holiday,
+            confidence=0.80
+        )
+    
+    async def _verify_with_live_sources(self, scheduled_status: MarketStatus, 
+                                      now_et: datetime) -> MarketStatus:
+        """Verify market status with live data sources"""
+        verification_methods = [
+            self._verify_with_price_activity,
+            self._verify_with_futures_data,
+            self._verify_with_volume_data,
+        ]
+        
+        verification_results = []
+        sources_used = []
+        
+        for method in verification_methods:
+            try:
+                result = await method(now_et)
+                if result:
+                    is_open, source, confidence = result
+                    verification_results.append((is_open, confidence))
+                    sources_used.append(source)
+            except Exception as e:
+                logger.debug(f"Verification method failed: {e}")
+                continue
+        
+        if not verification_results:
+            # No verification available, use scheduled status
+            scheduled_status.verified_sources = ["schedule_only"]
+            scheduled_status.confidence = scheduled_status.confidence * 0.8  # Reduce confidence
+            return scheduled_status
+        
+        # Analyze verification results
+        open_votes = sum(1 for is_open, _ in verification_results if is_open)
+        closed_votes = len(verification_results) - open_votes
+        
+        avg_confidence = np.mean([conf for _, conf in verification_results])
+        
+        # If verification contradicts schedule with high confidence, update status
+        if len(verification_results) >= 2:
+            if open_votes > closed_votes and not scheduled_status.is_open:
+                # Markets appear open despite schedule
+                return MarketStatus(
+                    is_open=True,
+                    reason=f"Live verification shows markets active (sources: {', '.join(sources_used)})",
+                    next_open=None,
+                    next_close=scheduled_status.next_close,
+                    is_high_volume=avg_confidence > 0.7,
+                    is_holiday=scheduled_status.is_holiday,
+                    verified_sources=sources_used,
+                    confidence=avg_confidence
+                )
+            elif closed_votes > open_votes and scheduled_status.is_open:
+                # Markets appear closed despite schedule
+                next_open = self._get_next_market_open(now_et, scheduled_status.is_holiday)
+                return MarketStatus(
+                    is_open=False,
+                    reason=f"Live verification shows markets inactive (sources: {', '.join(sources_used)})",
+                    next_open=next_open,
+                    next_close=None,
+                    is_holiday=scheduled_status.is_holiday,
+                    verified_sources=sources_used,
+                    confidence=avg_confidence
+                )
+        
+        # Verification confirms schedule
+        scheduled_status.verified_sources = sources_used
+        scheduled_status.confidence = max(scheduled_status.confidence, avg_confidence)
+        scheduled_status.is_high_volume = avg_confidence > 0.7
+        
+        return scheduled_status
+    
+    async def _verify_with_price_activity(self, now_et: datetime) -> Optional[Tuple[bool, str, float]]:
+        """Verify market status by checking for recent price activity"""
+        try:
+            # Check gold futures (GC=F) for recent activity
+            ticker = yf.Ticker("GC=F")
+            hist = ticker.history(period="5m", interval="1m")
+            
+            if hist.empty or len(hist) < 3:
+                return False, "yfinance_price", 0.6
+            
+            # Check if prices are moving
+            price_changes = hist['Close'].pct_change().abs()
+            recent_activity = price_changes.iloc[-3:].mean()
+            
+            # If significant price movement, markets are likely open
+            if recent_activity > 0.0001:  # 0.01% movement
+                return True, "yfinance_price", min(0.9, recent_activity * 10000)
+            else:
+                # Could be open but quiet, or closed
+                return False, "yfinance_price", 0.5
+                
+        except Exception as e:
+            logger.debug(f"Price activity verification failed: {e}")
+            return None
+    
+    async def _verify_with_futures_data(self, now_et: datetime) -> Optional[Tuple[bool, str, float]]:
+        """Verify using futures market data"""
+        try:
+            # Use multiple tickers to cross-verify
+            tickers = ["GC=F", "SI=F", "HG=F"]  # Gold, Silver, Copper
+            
+            all_volume = 0
+            active_tickers = 0
+            
+            for symbol in tickers:
+                try:
+                    ticker = yf.Ticker(symbol)
+                    hist = ticker.history(period="1d", interval="5m")
+                    
+                    if not hist.empty and len(hist) > 0:
+                        recent_volume = hist['Volume'].iloc[-1]
+                        if recent_volume > 100:  # Minimal activity threshold
+                            active_tickers += 1
+                        all_volume += recent_volume
+                except:
+                    continue
+            
+            # If at least 2 commodities show activity, markets are likely open
+            if active_tickers >= 2:
+                confidence = min(0.95, active_tickers / len(tickers))
+                return True, "futures_volume", confidence
+            elif all_volume == 0:
+                return False, "futures_volume", 0.8
+            else:
+                return False, "futures_volume", 0.6
+                
+        except Exception as e:
+            logger.debug(f"Futures verification failed: {e}")
+            return None
+    
+    async def _verify_with_volume_data(self, now_et: datetime) -> Optional[Tuple[bool, str, float]]:
+        """Verify using volume patterns"""
+        try:
+            # Check gold ETFs for US market hours activity
+            ticker = yf.Ticker("GLD")
+            hist = ticker.history(period="1d", interval="5m")
+            
+            if hist.empty:
+                return None
+            
+            # Check if current time is during US market hours (9:30 AM - 4 PM ET)
+            current_time = now_et.time()
+            is_us_market_hours = dt_time(9, 30) <= current_time <= dt_time(16, 0)
+            
+            if is_us_market_hours:
+                # During US hours, GLD should be trading if markets are open
+                recent_volume = hist['Volume'].iloc[-1] if len(hist) > 0 else 0
+                if recent_volume > 1000:
+                    return True, "etf_volume", 0.85
+                else:
+                    return False, "etf_volume", 0.7
+            else:
+                # Outside US hours, GLD won't trade but futures might
+                return None
+                
+        except Exception as e:
+            logger.debug(f"Volume verification failed: {e}")
+            return None
+    
+    def _get_next_market_open(self, current_time: datetime, is_holiday: bool) -> datetime:
+        """Calculate next market opening time"""
+        if is_holiday:
+            # If today is a holiday, next open is tomorrow at 6 PM ET (or next non-holiday)
+            next_day = current_time + timedelta(days=1)
+            while next_day.date() in self.us_holidays:
+                next_day += timedelta(days=1)
+            return next_day.replace(hour=18, minute=0, second=0, microsecond=0)
+        
+        weekday = current_time.weekday()
+        current_time_t = current_time.time()
+        
+        if weekday >= 5:  # Weekend
+            # Next open is Sunday 6 PM ET
+            days_until_sunday = (6 - weekday) % 7
+            next_open = current_time + timedelta(days=days_until_sunday)
+            return next_open.replace(hour=18, minute=0, second=0, microsecond=0)
+        
+        # Weekday
+        if current_time_t < dt_time(18, 0):
+            # If before 6 PM, market opens today at 6 PM (unless in break)
+            if dt_time(17, 0) <= current_time_t < dt_time(18, 0):
+                return current_time.replace(hour=18, minute=0, second=0, microsecond=0)
+        else:
+            # If after 6 PM, next open is tomorrow at 6 PM
+            next_day = current_time + timedelta(days=1)
+            return next_day.replace(hour=18, minute=0, second=0, microsecond=0)
+        
+        return current_time.replace(hour=18, minute=0, second=0, microsecond=0)
+    
+    def should_generate_signal(self, force_check: bool = False) -> Tuple[bool, Optional[MarketStatus]]:
+        """
+        Determine if we should generate a signal based on market status.
+        Returns: (should_generate, market_status)
+        """
+        try:
+            # Run async check synchronously for this method
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            market_status = loop.run_until_complete(self.get_market_status())
+            loop.close()
+            
+            # Always generate signals during market hours
+            if market_status.is_open:
+                return True, market_status
+            
+            # Outside market hours, only generate if we haven't recently
+            # or if user specifically requests (force_check)
+            if force_check:
+                return True, market_status
+            
+            # For non-market hours, check if it's worth generating
+            # (e.g., significant news, price movements)
+            return False, market_status
+            
+        except Exception as e:
+            logger.error(f"Market status check failed: {e}")
+            # Fallback to schedule-based decision
+            now_et = datetime.now(TIMEZONE)
+            weekday = now_et.weekday()
+            current_time = now_et.time()
+            
+            # Simple schedule check as fallback
+            if weekday < 5 and dt_time(6, 0) <= current_time <= dt_time(17, 0):
+                return True, MarketStatus(
+                    is_open=True,
+                    reason="Fallback schedule check",
+                    confidence=0.5
+                )
+            return False, None
+
+# ================= 4. REAL GOLD SPOT PRICE EXTRACTOR =================
 class RealGoldPriceExtractor:
     """Extract real gold spot price from multiple reliable sources"""
     
@@ -449,7 +830,7 @@ class RealGoldPriceExtractor:
             logger.error(f"Historical data error: {e}")
             return None
 
-# ================= 4. TECHNICAL ANALYZER =================
+# ================= 5. TECHNICAL ANALYZER =================
 class TechnicalAnalyzer:
     """Technical analysis for signal generation"""
     
@@ -586,7 +967,7 @@ class TechnicalAnalyzer:
         
         return max(-1.0, min(1.0, trend_strength))
 
-# ================= 5. ENHANCED SENTIMENT ANALYZER =================
+# ================= 6. ENHANCED SENTIMENT ANALYZER =================
 class EnhancedSentimentAnalyzer:
     """Enhanced sentiment analysis with multiple free sources"""
     
@@ -705,7 +1086,7 @@ class EnhancedSentimentAnalyzer:
             gold_specific=round(gold_specific, 2)
         )
 
-# ================= 6. CLEAN SIGNAL GENERATOR =================
+# ================= 7. CLEAN SIGNAL GENERATOR =================
 class SignalGenerator:
     """Generate clean trading signals"""
     
@@ -719,8 +1100,8 @@ class SignalGenerator:
         }
     
     def generate_signal(self, price: float, indicators: Dict, 
-                       sentiment: SentimentData) -> Signal:
-        """Generate trading signal"""
+                       sentiment: SentimentData, market_status: MarketStatus = None) -> Signal:
+        """Generate trading signal with market status context"""
         
         # Calculate factor scores
         factor_scores = {
@@ -731,9 +1112,12 @@ class SignalGenerator:
             'market_structure': self._calculate_market_structure_score(indicators)
         }
         
+        # Adjust weights based on market status
+        adjusted_weights = self._adjust_weights_for_market_status(market_status)
+        
         # Calculate weighted confidence
         weighted_score = sum(
-            factor_scores[factor] * self.weights[factor]
+            factor_scores[factor] * adjusted_weights[factor]
             for factor in factor_scores
         )
         
@@ -760,9 +1144,12 @@ class SignalGenerator:
             lean = "BULLISH" if "BUY" in action else "BEARISH"
         
         # Generate market summary
-        market_summary = self._generate_market_summary(price, indicators, sentiment, weighted_score)
+        market_summary = self._generate_market_summary(
+            price, indicators, sentiment, weighted_score, market_status
+        )
         
-        return Signal(
+        # Create signal with market status
+        signal = Signal(
             action=action,
             confidence=round(confidence, 2),
             price=price,
@@ -772,6 +1159,45 @@ class SignalGenerator:
             is_high_alert=is_high_alert,
             rationale=factor_scores
         )
+        
+        # Add market status info if available
+        if market_status:
+            if not market_status.is_open:
+                signal.market_status = f"⚠️ Markets Closed: {market_status.reason}"
+                if market_status.next_open:
+                    signal.market_status += f" | Next Open: {market_status.next_open.strftime('%Y-%m-%d %H:%M ET')}"
+            elif market_status.is_high_volume:
+                signal.market_status = "✅ Markets Open | High Volume Session"
+            else:
+                signal.market_status = "✅ Markets Open | Normal Session"
+        
+        return signal
+    
+    def _adjust_weights_for_market_status(self, market_status: MarketStatus = None) -> Dict[str, float]:
+        """Adjust signal weights based on market status"""
+        if not market_status or market_status.is_open:
+            return self.weights.copy()
+        
+        # When markets are closed, reduce weights on volume and momentum
+        adjusted = self.weights.copy()
+        
+        # Reduce volume and momentum weights (less reliable when markets are closed)
+        if 'volume' in adjusted:
+            adjusted['volume'] *= 0.5
+        if 'momentum' in adjusted:
+            adjusted['momentum'] *= 0.7
+        
+        # Increase sentiment weight (news still flows when markets are closed)
+        if 'sentiment' in adjusted:
+            adjusted['sentiment'] *= 1.3
+        
+        # Normalize weights
+        total = sum(adjusted.values())
+        if total > 0:
+            for key in adjusted:
+                adjusted[key] /= total
+        
+        return adjusted
     
     def _calculate_trend_score(self, price, indicators):
         """Calculate trend strength score"""
@@ -890,9 +1316,19 @@ class SignalGenerator:
         return max(0.0, min(1.0, score))
     
     def _generate_market_summary(self, price: float, indicators: Dict, 
-                                sentiment: SentimentData, weighted_score: float) -> str:
-        """Generate comprehensive market summary"""
+                                sentiment: SentimentData, weighted_score: float,
+                                market_status: MarketStatus = None) -> str:
+        """Generate comprehensive market summary with market status context"""
         summary_parts = []
+        
+        # Add market status context
+        if market_status:
+            if not market_status.is_open:
+                summary_parts.append(f"Markets closed: {market_status.reason}")
+            elif market_status.is_high_volume:
+                summary_parts.append("High volume session")
+            elif market_status.is_holiday:
+                summary_parts.append("Holiday trading")
         
         # Price context
         if 'sma_20' in indicators and 'sma_50' in indicators:
@@ -939,67 +1375,103 @@ class SignalGenerator:
         elif price_position > 0.8:
             summary_parts.append("Near upper Bollinger Band resistance")
         
+        # Sentiment context
+        if sentiment.article_count > 0:
+            if sentiment.score > 0.2:
+                summary_parts.append("Positive news sentiment")
+            elif sentiment.score < -0.2:
+                summary_parts.append("Negative news sentiment")
+        
         if not summary_parts:
             summary_parts.append("Market in consolidation phase")
         
-        return ". ".join(summary_parts[:3])
+        return ". ".join(summary_parts[:4])
 
-# ================= 7. 15-MINUTE SIGNAL SCHEDULER =================
+# ================= 8. 15-MINUTE SIGNAL SCHEDULER WITH MARKET STATUS =================
 class SignalScheduler:
-    """Schedule signals every 15 minutes"""
+    """Schedule signals with market status awareness"""
     
     def __init__(self):
         self.interval = 900  # 15 minutes in seconds
         self.last_signal_time = None
+        self.market_checker = LiveMarketStatusChecker()
+        self.outside_market_cache = {}
         
-    def should_generate_signal(self) -> bool:
-        """Check if it's time to generate a new signal"""
+    async def should_generate_signal(self) -> Tuple[bool, Optional[MarketStatus], str]:
+        """Check if we should generate a new signal with market status"""
         now = datetime.now(TIMEZONE)
         
-        if not self._is_market_hours(now):
-            return False
+        # Check market status
+        market_status = await self.market_checker.get_market_status()
         
-        if self.last_signal_time is None:
-            self.last_signal_time = now
-            return True
+        # Always generate during market hours
+        if market_status.is_open:
+            if self.last_signal_time is None:
+                self.last_signal_time = now
+                return True, market_status, "First signal of session"
+            
+            time_diff = (now - self.last_signal_time).total_seconds()
+            
+            if time_diff >= self.interval:
+                self.last_signal_time = now
+                return True, market_status, f"Regular {self.interval//60}-minute interval"
+            
+            return False, market_status, f"Waiting {int(self.interval - time_diff)} seconds"
         
-        time_diff = (now - self.last_signal_time).total_seconds()
+        # Outside market hours
+        cache_key = now.strftime("%Y-%m-%d %H")
+        if cache_key in self.outside_market_cache:
+            # Already generated a signal for this hour outside market hours
+            return False, market_status, "Outside market hours (cached)"
         
-        if time_diff >= self.interval:
-            self.last_signal_time = now
-            return True
+        # Generate at most one signal per hour outside market hours
+        # Check if significant time has passed since last signal
+        if self.last_signal_time:
+            time_diff = (now - self.last_signal_time).total_seconds()
+            if time_diff < 3600:  # 1 hour
+                return False, market_status, "Outside market hours (recent signal)"
         
-        return False
+        # Generate signal for this hour outside market hours
+        self.last_signal_time = now
+        self.outside_market_cache[cache_key] = now
+        return True, market_status, "Outside market hours (hourly update)"
     
-    def get_next_signal_time(self) -> Optional[datetime]:
-        """Get time of next scheduled signal"""
+    async def get_next_signal_time(self) -> Tuple[Optional[datetime], Optional[MarketStatus]]:
+        """Get time of next scheduled signal with market status"""
         if self.last_signal_time is None:
-            return datetime.now(TIMEZONE)
+            return datetime.now(TIMEZONE), None
         
         next_time = self.last_signal_time + timedelta(seconds=self.interval)
         
-        # Ensure next signal is during market hours
-        while not self._is_market_hours(next_time):
-            next_time += timedelta(seconds=self.interval)
+        # Check market status at next scheduled time
+        market_checker = LiveMarketStatusChecker()
         
-        return next_time
+        # We need to run this synchronously in this context
+        try:
+            loop = asyncio.get_event_loop()
+        except:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        future_market_status = await market_checker.get_market_status()
+        
+        # If markets will be closed at next time, find next open time
+        if not future_market_status.is_open and future_market_status.next_open:
+            return future_market_status.next_open, future_market_status
+        
+        return next_time, future_market_status
     
-    @staticmethod
-    def _is_market_hours(now: datetime) -> bool:
-        """Check if within reasonable trading hours"""
-        day = now.weekday()
-        current_time = now.time()
-        
-        # Monday-Friday, 8AM-8PM ET
-        if day >= 5:  # Weekend
-            return False
-        
-        if current_time < time(8, 0) or current_time > time(20, 0):
-            return False
-        
-        return True
+    def get_market_hours_summary(self) -> str:
+        """Get summary of gold market hours"""
+        return (
+            "Gold Market Hours (ET):\n"
+            "• Sunday 6:00 PM to Friday 5:00 PM\n"
+            "• Daily break: 5:00 PM to 6:00 PM\n"
+            "• Closed Saturdays and major US holidays\n"
+            "• 24-hour electronic trading available"
+        )
 
-# ================= 8. BACKTESTING MODULE =================
+# ================= 9. BACKTESTING MODULE =================
 class Backtester:
     """Backtest signal generation on 2 years of historical data"""
     
@@ -1221,9 +1693,9 @@ class Backtester:
                    f"Return={self.results.total_return:.1f}%, "
                    f"Sharpe={self.results.sharpe_ratio:.2f}")
 
-# ================= 9. GOLD TRADING SENTINEL V4 =================
+# ================= 10. GOLD TRADING SENTINEL V4.1 =================
 class GoldTradingSentinelV4:
-    """Main trading system with 15-minute signals and backtesting"""
+    """Main trading system with live market status checking"""
     
     def __init__(self):
         self.supabase = None
@@ -1238,17 +1710,26 @@ class GoldTradingSentinelV4:
         self.sentiment_analyzer = EnhancedSentimentAnalyzer()
         self.signal_generator = SignalGenerator()
         self.scheduler = SignalScheduler()
+        self.market_checker = LiveMarketStatusChecker()
         self.signal_history = []
         self.backtester = Backtester(years=BACKTEST_YEARS)
         
     async def initialize(self):
         """Initialize the system"""
         self.price_extractor = RealGoldPriceExtractor()
-        logger.info("Gold Trading Sentinel V4 initialized")
+        logger.info("Gold Trading Sentinel V4.1 initialized with live market status checking")
+        
+        # Print market hours info
+        print("\n" + "=" * 60)
+        print(self.scheduler.get_market_hours_summary())
+        print("=" * 60)
     
-    async def generate_signal(self) -> Optional[Signal]:
-        """Generate a trading signal"""
+    async def generate_signal(self, force_market_check: bool = False) -> Optional[Signal]:
+        """Generate a trading signal with market status awareness"""
         try:
+            # Check market status
+            market_status = await self.market_checker.get_market_status()
+            
             # 1. Get real gold spot price
             async with self.price_extractor as extractor:
                 price, sources, source_details = await extractor.get_real_gold_spot_price()
@@ -1258,6 +1739,7 @@ class GoldTradingSentinelV4:
                     return None
                 
                 logger.info(f"✅ Gold spot price: ${price:.2f} (sources: {', '.join(sources)})")
+                logger.info(f"📊 Market Status: {'✅ OPEN' if market_status.is_open else '⏸️ CLOSED'} - {market_status.reason}")
             
             # 2. Get historical data for indicators
             hist_data = self.price_extractor.get_historical_spot_data(
@@ -1267,20 +1749,20 @@ class GoldTradingSentinelV4:
             
             if hist_data is None or len(hist_data) < 50:
                 logger.warning("Insufficient historical data")
-                return self._create_basic_signal(price, sources)
+                return self._create_basic_signal(price, sources, market_status)
             
             # 3. Calculate technical indicators
             indicators = self.tech_analyzer.calculate_indicators(hist_data)
             
             if not indicators:
                 logger.warning("Failed to calculate indicators")
-                return self._create_basic_signal(price, sources)
+                return self._create_basic_signal(price, sources, market_status)
             
             # 4. Analyze sentiment
             sentiment = await self.sentiment_analyzer.analyze_sentiment()
             
-            # 5. Generate signal
-            signal = self.signal_generator.generate_signal(price, indicators, sentiment)
+            # 5. Generate signal with market status context
+            signal = self.signal_generator.generate_signal(price, indicators, sentiment, market_status)
             signal.sources = sources
             
             # 6. Log to database if available
@@ -1296,9 +1778,10 @@ class GoldTradingSentinelV4:
             logger.error(f"Error generating signal: {e}", exc_info=True)
             return None
     
-    def _create_basic_signal(self, price: float, sources: List[str]) -> Signal:
+    def _create_basic_signal(self, price: float, sources: List[str], 
+                            market_status: MarketStatus = None) -> Signal:
         """Create a basic signal when indicators are unavailable"""
-        return Signal(
+        signal = Signal(
             action="NEUTRAL",
             confidence=50.0,
             price=price,
@@ -1308,6 +1791,17 @@ class GoldTradingSentinelV4:
             is_high_alert=False,
             sources=sources
         )
+        
+        # Add market status info if available
+        if market_status:
+            if not market_status.is_open:
+                signal.market_status = f"⚠️ Markets Closed: {market_status.reason}"
+                if market_status.next_open:
+                    signal.market_status += f" | Next Open: {market_status.next_open.strftime('%Y-%m-%d %H:%M ET')}"
+            else:
+                signal.market_status = "✅ Markets Open"
+        
+        return signal
     
     async def _log_signal_to_db(self, signal: Signal):
         """Log signal to database"""
@@ -1319,6 +1813,7 @@ class GoldTradingSentinelV4:
                 "lean": signal.lean,
                 "is_high_alert": signal.is_high_alert,
                 "market_summary": signal.market_summary,
+                "market_status": signal.market_status or "",
                 "rationale": json.dumps(signal.rationale) if signal.rationale else "{}",
                 "sources": ", ".join(signal.sources) if signal.sources else "",
                 "created_at": signal.timestamp.isoformat()
@@ -1331,40 +1826,54 @@ class GoldTradingSentinelV4:
             logger.error(f"Database logging failed: {e}")
     
     async def run_live_signals(self, interval: int = DEFAULT_INTERVAL):
-        """Run live signal generation every 15 minutes"""
-        logger.info(f"🚀 Starting Gold Trading Sentinel V4 - Live Signals")
-        logger.info(f"⏰ Signal interval: {interval//60} minutes")
-        logger.info(f"🔔 High Alert Threshold: {HIGH_CONFIDENCE_THRESHOLD}% confidence")
-        logger.info("=" * 60)
+        """Run live signal generation with market status awareness"""
+        print("\n" + "=" * 60)
+        print("🚀 GOLD TRADING SENTINEL V4.1 - LIVE SIGNALS")
+        print("=" * 60)
+        print(f"📊 Real Gold Spot Price Extraction")
+        print(f"⏰ 15-Minute Signal Generation with Market Status")
+        print(f"🔔 High Alert Signals (> {HIGH_CONFIDENCE_THRESHOLD}% confidence)")
+        print(f"📈 Real-time Market Status Verification")
+        print("=" * 60)
         
         await self.initialize()
         
         try:
             while True:
-                now = datetime.now(TIMEZONE)
+                # Check if we should generate a signal
+                should_generate, market_status, reason = await self.scheduler.should_generate_signal()
                 
-                if not self.scheduler._is_market_hours(now):
-                    next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-                    wait_time = (next_hour - now).total_seconds()
-                    
-                    if wait_time > 0:
-                        logger.info(f"💤 Outside market hours. Resuming at: {next_hour.strftime('%Y-%m-%d %H:%M:%S')}")
-                        await asyncio.sleep(min(wait_time, 3600))
-                    continue
-                
-                if self.scheduler.should_generate_signal():
+                if should_generate:
                     signal = await self.generate_signal()
                     
                     if signal:
                         self._display_signal(signal)
                     
-                    next_signal = self.scheduler.get_next_signal_time()
-                    if next_signal:
-                        wait_seconds = max(1, (next_signal - datetime.now(TIMEZONE)).total_seconds())
-                        logger.info(f"⏳ Next signal at: {next_signal.strftime('%H:%M:%S')} "
-                                  f"(in {int(wait_seconds//60)}m {int(wait_seconds%60)}s)")
+                    # Get next signal time
+                    next_signal_time, next_market_status = await self.scheduler.get_next_signal_time()
+                    
+                    if next_signal_time:
+                        wait_seconds = max(1, (next_signal_time - datetime.now(TIMEZONE)).total_seconds())
+                        if wait_seconds > 0:
+                            if next_market_status and not next_market_status.is_open:
+                                logger.info(f"⏸️ Next market open: {next_signal_time.strftime('%Y-%m-%d %H:%M:%S ET')} "
+                                          f"(in {int(wait_seconds//3600)}h {int((wait_seconds%3600)//60)}m)")
+                            else:
+                                logger.info(f"⏳ Next signal at: {next_signal_time.strftime('%H:%M:%S ET')} "
+                                          f"(in {int(wait_seconds//60)}m {int(wait_seconds%60)}s)")
+                else:
+                    # Log why we're not generating
+                    if market_status and not market_status.is_open:
+                        if 'cached' not in reason.lower():
+                            logger.info(f"⏸️ {reason}")
+                    
+                    # Sleep shorter when markets are closed
+                    sleep_time = 60 if market_status and not market_status.is_open else 30
+                    await asyncio.sleep(sleep_time)
+                    continue
                 
-                await asyncio.sleep(30)  # Check every 30 seconds
+                # Sleep between checks
+                await asyncio.sleep(30)
                 
         except KeyboardInterrupt:
             logger.info("👋 Shutting down Gold Trading Sentinel")
@@ -1381,8 +1890,14 @@ class GoldTradingSentinelV4:
             print("🚨           HIGH ALERT SIGNAL           🚨")
             print("🚨 " * 10)
         
-        print(f"📊 GOLD TRADING SIGNAL - {signal.timestamp.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"📊 GOLD TRADING SIGNAL - {signal.timestamp.strftime('%Y-%m-%d %H:%M:%S ET')}")
         print("=" * 60)
+        
+        # Market status indicator
+        if signal.market_status:
+            print(f"📈 {signal.market_status}")
+            print("-" * 60)
+        
         print(f"💰 Spot Price: ${signal.price:.2f}")
         print(f"📈 Signal: {signal.action} (Confidence: {signal.confidence:.1f}%)")
         
@@ -1429,12 +1944,42 @@ class GoldTradingSentinelV4:
         else:
             print("❌ Backtest failed - insufficient data")
             return None
+    
+    async def check_market_status(self):
+        """Check and display current market status"""
+        status = await self.market_checker.get_market_status()
+        
+        print("\n" + "=" * 60)
+        print("📊 LIVE MARKET STATUS CHECK")
+        print("=" * 60)
+        print(f"Status: {'✅ OPEN' if status.is_open else '⏸️ CLOSED'}")
+        print(f"Reason: {status.reason}")
+        print(f"Confidence: {status.confidence:.1%}")
+        
+        if status.is_holiday:
+            print(f"Holiday: Yes ({self.market_checker.us_holidays.get(datetime.now(TIMEZONE).date())})")
+        
+        if status.verified_sources:
+            print(f"Verified Sources: {', '.join(status.verified_sources)}")
+        
+        if status.next_open:
+            now = datetime.now(TIMEZONE)
+            wait_time = status.next_open - now
+            print(f"Next Open: {status.next_open.strftime('%Y-%m-%d %H:%M ET')} "
+                  f"(in {int(wait_time.total_seconds()//3600)}h {int((wait_time.total_seconds()%3600)//60)}m)")
+        
+        if status.next_close:
+            print(f"Next Close: {status.next_close.strftime('%Y-%m-%d %H:%M ET')}")
+        
+        print("=" * 60)
+        
+        return status
 
-# ================= 10. MAIN EXECUTION =================
+# ================= 11. MAIN EXECUTION =================
 async def main():
     """Main execution function"""
-    parser = argparse.ArgumentParser(description='Gold Trading Sentinel V4')
-    parser.add_argument('--mode', choices=['live', 'test', 'stats', 'single', 'backtest'], 
+    parser = argparse.ArgumentParser(description='Gold Trading Sentinel V4.1')
+    parser.add_argument('--mode', choices=['live', 'test', 'stats', 'single', 'backtest', 'market'], 
                        default='live', help='Operation mode')
     parser.add_argument('--interval', type=int, default=DEFAULT_INTERVAL,
                        help=f'Signal interval in seconds (default: {DEFAULT_INTERVAL})')
@@ -1448,29 +1993,23 @@ async def main():
     sentinel = GoldTradingSentinelV4()
     
     if args.mode == 'live':
-        print("\n" + "=" * 60)
-        print("🚀 GOLD TRADING SENTINEL V4 - LIVE SIGNAL MODE")
-        print("=" * 60)
-        print(f"📊 Real Gold Spot Price Extraction")
-        print(f"⏰ 15-Minute Signal Generation")
-        print(f"🔔 High Alert Signals (> {HIGH_CONFIDENCE_THRESHOLD}% confidence)")
-        print(f"📈 Neutral Signals with Market Lean")
-        print("=" * 60)
-        
         await sentinel.run_live_signals(interval=args.interval)
         
     elif args.mode == 'test':
-        print("\n🧪 Testing Gold Price Extraction...")
+        print("\n🧪 Testing Gold Price Extraction and Market Status...")
         await sentinel.initialize()
         
+        # Test market status
+        market_status = await sentinel.check_market_status()
+        
+        # Test price extraction
         async with sentinel.price_extractor as extractor:
             price, sources, details = await extractor.get_real_gold_spot_price()
             
             if price:
-                print(f"✅ Test successful!")
+                print(f"\n✅ Test successful!")
                 print(f"💰 Gold spot price: ${price:.2f}")
                 print(f"📊 Sources: {', '.join(sources)}")
-                print(f"📋 Details: {json.dumps(details, indent=2)}")
                 
                 print("\n🧪 Generating test signal...")
                 signal = await sentinel.generate_signal()
@@ -1480,11 +2019,22 @@ async def main():
             else:
                 print("❌ Test failed - could not extract gold price")
     
+    elif args.mode == 'market':
+        print("\n📊 Checking Live Market Status...")
+        await sentinel.initialize()
+        await sentinel.check_market_status()
+        
+        # Show market hours info
+        print("\n" + sentinel.scheduler.get_market_hours_summary())
+    
     elif args.mode == 'stats':
         print("\n📊 Signal Statistics")
         print("=" * 60)
         
         await sentinel.initialize()
+        
+        # Check market status first
+        market_status = await sentinel.check_market_status()
         
         # Generate a few signals for stats
         print(f"\nGenerating signals for statistics...")
@@ -1509,6 +2059,11 @@ async def main():
         print("=" * 60)
         
         await sentinel.initialize()
+        
+        # Check market status
+        market_status = await sentinel.check_market_status()
+        
+        # Generate signal
         signal = await sentinel.generate_signal()
         
         if signal:
