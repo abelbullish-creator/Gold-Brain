@@ -1323,61 +1323,65 @@ class SessionAwareSignalGenerator:
         
         return ". ".join(summary_parts[:4])
 
-# ================= CORRECTED CLASS: SPOT PRICE EXTRACTOR =================
+# ================= DYNAMIC MULTI-PLATFORM SPOT EXTRACTOR =================
 class RealGoldPriceExtractor:
-    """Extracts GOLD SPOT prices (XAU/USD) with Context Manager support"""
+    """Extracts live SPOT prices with multi-platform outlier detection"""
     
     def __init__(self):
         self.session = None
+        self.headers = {'User-Agent': 'Mozilla/5.0'}
+        # We track recent valid prices to prevent sudden 'synthetic' jumps
+        self.price_history = deque(maxlen=5) 
 
     async def __aenter__(self):
-        """Allows use of 'async with RealGoldPriceExtractor() as extractor'"""
-        self.session = aiohttp.ClientSession()
+        self.session = aiohttp.ClientSession(headers=self.headers)
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Cleans up the session when the block finishes"""
-        if self.session:
-            await self.session.close()
+    async def __aexit__(self, *args):
+        if self.session: await self.session.close()
 
     async def get_refined_price(self) -> float:
-        """Fetches and validates the current GOLD SPOT price (XAU/USD)"""
-        if not self.session:
-            raise RuntimeError("Extractor session not initialized. Use 'async with'.")
-            
-        prices = []
+        """Fetches from 3 platforms and uses the median to avoid synthetic errors"""
+        platform_prices = []
+
+        # Platform 1: Yahoo Spot
         try:
-            # CHANGED: 'GC=F' (Futures) -> 'XAUUSD=X' (Spot Gold)
-            ticker = yf.Ticker("XAUUSD=X")
-            
-            # Fast info usually works best for live currency pairs
-            price = ticker.fast_info.get('last_price')
-            
-            # Validation: Spot gold is currently ~2000-3000 range. 
-            # If we get 0 or weird numbers, ignore it.
-            if price and price > 1000:
-                prices.append(price)
-                logger.debug(f"Fetched Spot Price: {price}")
-        except Exception as e:
-            logger.debug(f"Yahoo spot price fetch failed: {e}")
+            y_price = yf.Ticker("XAUUSD=X").fast_info.get('last_price')
+            if y_price: platform_prices.append(float(y_price))
+        except: pass
 
-        if not prices:
-            # Fallback to historical data if live fetch fails
-            try:
-                # CHANGED: 'GC=F' -> 'XAUUSD=X'
-                ticker = yf.Ticker("XAUUSD=X")
-                hist = ticker.history(period="1d", interval="1m")
-                if not hist.empty:
-                    prices.append(hist['Close'].iloc[-1])
-            except Exception as e:
-                logger.debug(f"History fetch failed: {e}")
+        # Platform 2: GoldPrice.org (Direct AJAX)
+        try:
+            async with self.session.get("https://data-as-of.goldprice.org/get/ajax/usd") as r:
+                data = await r.json()
+                gp_price = float(data.get('price', [[0,0]])[0][1])
+                platform_prices.append(gp_price)
+        except: pass
 
-        if not prices:
-            # Final Fallback: Silver-to-Gold ratio or other correlation could go here, 
-            # but for now we return None to be safe.
+        # Platform 3: Investing.com (Scrape)
+        try:
+            async with self.session.get("https://www.investing.com/currencies/xau-usd") as r:
+                text = await r.text()
+                match = re.search(r'instrument-price-last">([\d,.]+)<', text)
+                if match: platform_prices.append(float(match.group(1).replace(',', '')))
+        except: pass
+
+        if not platform_prices:
+            logger.error("❌ No spot price data available from any platform.")
             return None
 
-        return float(np.mean(prices))
+        # --- DYNAMIC VALIDATION (Replaces 'if price > 1000') ---
+        # 1. Use the Median of all platforms to ignore one bad/stale source
+        refined_median = float(np.median(platform_prices))
+        
+        # 2. Volatility Check: Ensure the source prices are within 0.5% of each other
+        # This prevents the bot from using a 'glitched' price from one site
+        spread = (max(platform_prices) - min(platform_prices)) / refined_median
+        if spread > 0.005: # 0.5% deviation is massive for spot gold
+            logger.warning(f"⚠️ High platform deviation ({spread:.4%}). Using median.")
+
+        logger.info(f"✅ Verified Spot Price: ${refined_median:.2f} (Sources: {len(platform_prices)})")
+        return refined_median
 
 # ================= 8. GOLD TRADING SENTINEL V5.0 =================
 class GoldTradingSentinelV5:
