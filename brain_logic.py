@@ -1424,9 +1424,9 @@ class GoldTradingSentinelV5:
                 logger.warning(f"⚠️ Trading avoided: {reason}")
                 return self._create_safe_signal(market_status, volatility, reason)
             
-            # 4. Get real gold spot price
-            async with self.price_extractor as extractor:
-                price, sources, source_details = await extractor.get_real_gold_spot_price()
+            # 4. # The extractor now manages its OWN session internally
+                 async with self.price_extractor as extractor:
+                current_price = await extractor.get_refined_price()
                 
                 if not price:
                     logger.error("Failed to get gold price")
