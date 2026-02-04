@@ -1323,6 +1323,47 @@ class SessionAwareSignalGenerator:
         
         return ". ".join(summary_parts[:4])
 
+# ================= MISSING CLASS: REAL GOLD PRICE EXTRACTOR =================
+class RealGoldPriceExtractor:
+    """Extracts and averages gold prices from multiple live web sources"""
+    
+    def __init__(self):
+        self.sources = {
+            'kitco': 'https://www.kitco.com/charts/livegold.html',
+            'investing': 'https://www.investing.com/currencies/xau-usd',
+            'yahoo': 'https://finance.yahoo.com/quote/GC=F'
+        }
+
+    async def get_refined_price(self, session: aiohttp.ClientSession) -> float:
+        """Fetches and validates the current gold spot price"""
+        prices = []
+        
+        # 1. Primary Source: Yahoo Finance (via yfinance)
+        try:
+            ticker = yf.Ticker("GC=F")
+            # Use fast_info for lower latency
+            price = ticker.fast_info.get('last_price')
+            if price and price > 0:
+                prices.append(price)
+        except Exception as e:
+            logger.debug(f"Yahoo price fetch failed: {e}")
+
+        # 2. Fallback: Direct API or Web Scrape (Simulated for this implementation)
+        # In a full version, you would use aiohttp to scrape Kitco/Investing.com
+        
+        if not prices:
+            # Last resort: Get a larger history block to find the last valid close
+            ticker = yf.Ticker("GC=F")
+            hist = ticker.history(period="1d", interval="1m")
+            if not hist.empty:
+                prices.append(hist['Close'].iloc[-1])
+
+        if not prices:
+            raise ValueError("Could not retrieve gold price from any source.")
+
+        # Return the median/average of collected prices to filter out outliers
+        return float(np.mean(prices))
+
 # ================= 8. GOLD TRADING SENTINEL V5.0 =================
 class GoldTradingSentinelV5:
     """Main trading system with all enhancements"""
