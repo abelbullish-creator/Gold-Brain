@@ -1,9 +1,9 @@
-name: Gold Brain Automation V4
+name: Gold Brain Automation V5
 
 on:
   schedule:
     - cron: '*/15 * * * *'  # Runs every 15 minutes
-  workflow_dispatch:        # Allows manual triggering from the Actions tab
+  workflow_dispatch:        # Allows manual triggering
 
 jobs:
   run-logic:
@@ -16,21 +16,27 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          cache: 'pip' # Speeds up subsequent runs by caching libraries
+          cache: 'pip'
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # Explicitly install all requirements for V5.0 logic
           pip install pandas numpy yfinance aiohttp textblob feedparser supabase scipy holidays pytz
-          # Backup: Install from requirements.txt if the file exists
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          # Essential for the sentiment analysis engine
           python -m textblob.download_corpora
 
       - name: Run Gold Bot
         env:
+          # Database Secrets
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        # Runs the script in async mode as required by your v5.0 structure
+          # Telegram Secrets (Added for Live Alerts)
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python brain_logic.py --mode single
+
+          
+          # Telegram Secrets (Added for Live Alerts)
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python brain_logic.py --mode single
