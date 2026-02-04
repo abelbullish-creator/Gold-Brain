@@ -10,3 +10,4 @@ scipy
 beautifulsoup4
 requests
 matplotlib
+holidays
