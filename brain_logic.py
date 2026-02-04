@@ -545,12 +545,14 @@ async def main():
         # ... rest of your code ...
     
     elif args.mode == 'live':
+        # 1. Fetch Credentials at the start
+        MY_TOKEN = os.getenv("TELEGRAM_TOKEN")
+        MY_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+        
         print("\n" + "=" * 60)
-        print("🎯 LIVE GOLD TRADING SIGNALS")
+        print("🎯  LIVE GOLD TRADING SIGNALS")
         print("=" * 60)
-        print("Running in live mode...")
-        print("Press Ctrl+C to stop")
-        print("-" * 60)
+        print(f"DEBUG: Telegram Token: {'FOUND' if MY_TOKEN else 'MISSING'}")
         
         try:
             while True:
@@ -558,15 +560,24 @@ async def main():
                 
                 if signal:
                     sentinel.display_signal(signal)
-                
-                # Wait for next interval
-                print(f"\n⏳ Next update in {args.interval//60} minutes...")
+                    
+                    # 2. Add Telegram logic inside the loop
+                    if MY_TOKEN and MY_CHAT_ID:
+                        emoji = "🔴" if "SELL" in signal.action else "🟢" if "BUY" in signal.action else "🟡"
+                        msg = (
+                            f"{emoji} *LIVE GOLD ALERT*\n"
+                            f"🎯 Signal: {signal.action}\n"
+                            f"💰 Price: ${signal.price:.2f}\n"
+                            f"📊 Confidence: {signal.confidence:.1%}"
+                        )
+                        await send_telegram_msg(MY_TOKEN, MY_CHAT_ID, msg)
+                        print("📡 Alert sent to Telegram!")
+
+                print(f"\n ⏳  Next update in {args.interval//60} minutes...")
                 await asyncio.sleep(args.interval)
                 
         except KeyboardInterrupt:
-            print("\n👋 Stopping live signals...")
-    
-    return 0
+            print("\n 👋  Stopping live signals...")
 
 if __name__ == "__main__":
     try:
