@@ -34,13 +34,21 @@ from collections import deque
 warnings.filterwarnings('ignore')
 
 # ================= 1. ENHANCED CONFIGURATION =================
+# Define handlers
+main_file_handler = logging.FileHandler('gold_sentinel_v5.log')
+stream_handler = logging.StreamHandler()
+heartbeat_file_handler = logging.FileHandler('market_heartbeat.log')
+
+# Set levels for handlers
+heartbeat_file_handler.setLevel(logging.DEBUG)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('gold_sentinel_v5.log'),
-        logging.StreamHandler(),
-        logging.FileHandler('market_heartbeat.log', level=logging.DEBUG)
+        main_file_handler,
+        stream_handler,
+        heartbeat_file_handler
     ]
 )
 logger = logging.getLogger(__name__)
