@@ -28,8 +28,8 @@ jobs:
       - name: Run Gold Bot
         env:
           # Database Secrets
-          SUPABASE_URL: ${{https://rxauvodphkqzztoqfpey.supabase.co}}
-          SUPABASE_KEY: ${{sb_secret_WzCYSUVS2eZLjj11DE3xAw_zfCJYQ0V}}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           # Telegram Secrets (Added for Live Alerts)
           TELEGRAM_TOKEN: ${{8368825267:AAGVZL1NWc52NzuCzTypC-fxo3rednNjORc}}
           TELEGRAM_CHAT_ID: ${{302733647}}
