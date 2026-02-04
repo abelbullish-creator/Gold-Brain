@@ -156,11 +156,12 @@ class RealGoldPriceExtractor:
         """Fetches from 3 platforms and uses the median to avoid synthetic errors"""
         platform_prices = []
 
-        # Platform 1: Yahoo Spot
+        # Platform 1: Yahoo Spot - Using GC=F (Gold Futures) which is more reliable
         try:
-            y_price = yf.Ticker("XAUUSD=X").fast_info.get('last_price')
+            y_price = yf.Ticker("GC=F").fast_info.get('last_price')
             if y_price: 
                 platform_prices.append(float(y_price))
+                logger.info(f"✅ Yahoo Finance: ${y_price:.2f}")
         except Exception as e:
             logger.debug(f"Yahoo price failed: {e}")
 
@@ -171,6 +172,7 @@ class RealGoldPriceExtractor:
                 if data and 'price' in data and len(data['price']) > 0:
                     gp_price = float(data['price'][0][1])
                     platform_prices.append(gp_price)
+                    logger.info(f"✅ GoldPrice.org: ${gp_price:.2f}")
         except Exception as e:
             logger.debug(f"GoldPrice.org failed: {e}")
 
@@ -179,11 +181,33 @@ class RealGoldPriceExtractor:
             async with self.session.get("https://www.investing.com/currencies/xau-usd", 
                                        headers={'User-Agent': 'Mozilla/5.0'}) as r:
                 text = await r.text()
-                match = re.search(r'instrument-price-last">([\d,.]+)<', text)
-                if match: 
-                    platform_prices.append(float(match.group(1).replace(',', '')))
+                # Try multiple patterns for Investing.com
+                patterns = [
+                    r'instrument-price-last">([\d,.]+)<',
+                    r'last-price-value[^>]*>([\d,.]+)<',
+                    r'data-test="instrument-price-last"[^>]*>([\d,.]+)<'
+                ]
+                for pattern in patterns:
+                    match = re.search(pattern, text)
+                    if match: 
+                        price = float(match.group(1).replace(',', ''))
+                        platform_prices.append(price)
+                        logger.info(f"✅ Investing.com: ${price:.2f}")
+                        break
         except Exception as e:
             logger.debug(f"Investing.com failed: {e}")
+
+        # Platform 4: BullionVault as backup
+        try:
+            async with self.session.get("https://www.bullionvault.com/gold-price-chart.do") as r:
+                text = await r.text()
+                match = re.search(r'"lastPrice":\s*([\d.]+)', text)
+                if match: 
+                    price = float(match.group(1))
+                    platform_prices.append(price)
+                    logger.info(f"✅ BullionVault: ${price:.2f}")
+        except Exception as e:
+            logger.debug(f"BullionVault failed: {e}")
 
         if not platform_prices:
             logger.error("❌ No spot price data available from any platform.")
@@ -192,22 +216,24 @@ class RealGoldPriceExtractor:
         # Use the Median of all platforms to ignore one bad/stale source
         refined_median = float(np.median(platform_prices))
         
-        # Volatility Check: Ensure the source prices are within 0.5% of each other
-        spread = (max(platform_prices) - min(platform_prices)) / refined_median
-        if spread > 0.005:  # 0.5% deviation is massive for spot gold
-            logger.warning(f"⚠️ High platform deviation ({spread:.4%}). Using median.")
+        # Volatility Check: Ensure the source prices are within 1% of each other
+        if len(platform_prices) > 1:
+            spread = (max(platform_prices) - min(platform_prices)) / refined_median
+            if spread > 0.01:  # 1% deviation is too high
+                logger.warning(f"⚠️ High platform deviation ({spread:.4%}). Using median.")
 
-        logger.info(f"✅ Verified Spot Price: ${refined_median:.2f} (Sources: {len(platform_prices)})")
+        logger.info(f"✅ Final Verified Spot Price: ${refined_median:.2f} (Sources: {len(platform_prices)})")
         return refined_median
 
     def get_historical_spot_data(self, years: int = 1, interval: str = "1h") -> pd.DataFrame:
-        """Get historical data for technical analysis"""
+        """Get historical data for technical analysis - using GC=F instead of XAUUSD=X"""
         try:
-            # Download historical data
-            ticker = yf.Ticker("XAUUSD=X")
+            # Use GC=F (Gold Futures) which has reliable historical data
+            ticker = yf.Ticker("GC=F")
             end_date = datetime.now()
             start_date = end_date - timedelta(days=years * 365)
             
+            logger.info(f"📊 Downloading {years} year(s) of historical data for GC=F...")
             hist = ticker.history(
                 start=start_date.strftime('%Y-%m-%d'),
                 end=end_date.strftime('%Y-%m-%d'),
@@ -216,11 +242,33 @@ class RealGoldPriceExtractor:
             
             if hist.empty:
                 logger.warning(f"No historical data for {years} years")
+                # Try with shorter period
+                logger.info("Trying with 3-month period...")
+                hist = ticker.history(period="3mo", interval=interval)
+                
+                if hist.empty:
+                    # Last resort: try with 1 month
+                    hist = ticker.history(period="1mo", interval=interval)
+            
+            if hist.empty:
+                logger.error("Failed to get any historical data")
                 return None
             
+            logger.info(f"✅ Historical data: {len(hist)} rows, from {hist.index[0].date()} to {hist.index[-1].date()}")
             return hist
         except Exception as e:
             logger.error(f"Failed to get historical data: {e}")
+            # Try alternative symbol as last resort
+            try:
+                logger.info("Trying alternative symbol GLD (Gold ETF)...")
+                ticker = yf.Ticker("GLD")
+                hist = ticker.history(period="1y", interval="1h")
+                if not hist.empty:
+                    logger.info("✅ Using GLD as historical data source")
+                    return hist
+            except Exception as e2:
+                logger.error(f"GLD also failed: {e2}")
+            
             return None
 
 # ================= 3. ENHANCED MARKET STATUS CHECKER =================
@@ -691,12 +739,10 @@ class WeightedSentimentAnalyzer:
         
         async def fetch_source(source: str):
             try:
-                # Use feedparser to parse RSS
-                import feedparser
                 feed = feedparser.parse(source)
                 articles = []
                 
-                for entry in feed.entries[:15]:  # Increased limit
+                for entry in feed.entries[:15]:
                     source_domain = source.split('/')[2] if '//' in source else 'unknown'
                     articles.append({
                         'title': entry.get('title', ''),
@@ -715,7 +761,6 @@ class WeightedSentimentAnalyzer:
                 logger.debug(f"Failed to fetch {source}: {e}")
                 return []
         
-        # Run all fetches in parallel
         tasks = [fetch_source(source) for source in self.news_sources]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
@@ -729,7 +774,7 @@ class WeightedSentimentAnalyzer:
         """Check if text is gold-specific"""
         text_lower = text.lower()
         gold_words = sum(1 for keyword in self.gold_keywords if keyword.lower() in text_lower)
-        return gold_words >= 2  # At least 2 gold-related keywords
+        return gold_words >= 2
     
     def _process_articles_weighted(self, articles: List[Dict[str, str]]) -> SentimentData:
         """Process articles with source weighting"""
@@ -741,7 +786,6 @@ class WeightedSentimentAnalyzer:
         non_gold_articles = [a for a in articles if not a['is_gold_specific']]
         
         if not gold_articles:
-            # No gold-specific articles found
             return SentimentData(
                 score=0.0,
                 sources=list(set(a['source'] for a in articles[:3])),
@@ -837,12 +881,15 @@ class EnhancedTechnicalAnalyzer:
     def calculate_indicators(df: pd.DataFrame) -> Dict[str, Any]:
         """Calculate technical indicators including ADX"""
         if df.empty or len(df) < 50:
+            logger.warning(f"Insufficient data for indicators: {len(df)} rows")
             return {}
         
         closes = df['Close'].values
         highs = df['High'].values
         lows = df['Low'].values
         closes_series = pd.Series(closes)
+        
+        logger.info(f"Calculating indicators on {len(df)} data points...")
         
         # Moving averages
         sma_20 = closes_series.rolling(20).mean().iloc[-1]
@@ -858,11 +905,14 @@ class EnhancedTechnicalAnalyzer:
         # Bollinger Bands
         bb_upper, bb_middle, bb_lower = EnhancedTechnicalAnalyzer.calculate_bollinger_bands(closes_series)
         
-        # Volume analysis
-        volumes = df['Volume'].values
-        current_volume = volumes[-1] if len(volumes) > 0 else 0
-        volume_avg_20 = pd.Series(volumes).rolling(20).mean().iloc[-1]
-        volume_ratio = current_volume / volume_avg_20 if volume_avg_20 > 0 else 1.0
+        # Volume analysis (if available)
+        if 'Volume' in df.columns:
+            volumes = df['Volume'].values
+            current_volume = volumes[-1] if len(volumes) > 0 else 0
+            volume_avg_20 = pd.Series(volumes).rolling(20).mean().iloc[-1]
+            volume_ratio = current_volume / volume_avg_20 if volume_avg_20 > 0 else 1.0
+        else:
+            volume_ratio = 1.0
         
         # Trend strength using ADX
         adx, plus_di, minus_di = EnhancedTechnicalAnalyzer.calculate_adx_full(
@@ -884,7 +934,7 @@ class EnhancedTechnicalAnalyzer:
         trend_direction = "BULLISH" if plus_di > minus_di else "BEARISH"
         trend_strength = "STRONG" if adx > 25 else "WEAK"
         
-        return {
+        indicators = {
             'sma_20': float(sma_20) if not pd.isna(sma_20) else 0.0,
             'sma_50': float(sma_50) if not pd.isna(sma_50) else 0.0,
             'sma_200': float(sma_200) if not pd.isna(sma_200) else 0.0,
@@ -902,6 +952,9 @@ class EnhancedTechnicalAnalyzer:
             'trend_direction': trend_direction,
             'trend_strength': trend_strength
         }
+        
+        logger.info(f"✅ Indicators calculated: RSI={rsi:.1f}, ADX={adx:.1f}, SMA20/50/200={sma_20:.1f}/{sma_50:.1f}/{sma_200:.1f}")
+        return indicators
     
     @staticmethod
     def calculate_adx_full(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> Tuple[float, float, float]:
@@ -1478,23 +1531,29 @@ class GoldTradingSentinelV5:
             hist_data = self.price_extractor.get_historical_spot_data(years=1, interval="1h")
             
             if hist_data is None or len(hist_data) < 50:
-                logger.warning("Insufficient historical data")
+                logger.warning("Insufficient historical data - generating basic signal")
                 return self._create_basic_signal(price, market_status, volatility)
             
             # 6. Calculate technical indicators
             indicators = self.tech_analyzer.calculate_indicators(hist_data)
             
             if not indicators:
-                logger.warning("Failed to calculate indicators")
+                logger.warning("Failed to calculate indicators - generating basic signal")
                 return self._create_basic_signal(price, market_status, volatility)
             
             # 7. Analyze sentiment
             sentiment = await self.sentiment_analyzer.analyze_sentiment()
             
+            logger.info(f"📰 Sentiment: Score={sentiment.weighted_score:.3f}, "
+                       f"Gold-specific={sentiment.gold_specific:.1%}, "
+                       f"Articles={sentiment.article_count}")
+            
             # 8. Generate signal with all context
             signal = self.signal_generator.generate_signal(
                 price, indicators, sentiment, market_status, volatility
             )
+            
+            logger.info(f"✅ Signal generated: {signal.action} ({signal.confidence:.1f}%)")
             
             # 9. Store in history
             self.signal_history.append(signal)
@@ -1548,6 +1607,8 @@ class GoldTradingSentinelV5:
         
         if market_status.is_illiquid_period:
             status_parts.append("📉 Illiquid Period")
+        if market_status.spread_widening:
+            status_parts.append("📊 Wide Spreads")
         if volatility.is_spike:
             status_parts.append(f"⚡ Volatility Spike")
         
