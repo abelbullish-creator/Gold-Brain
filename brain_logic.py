@@ -136,12 +136,99 @@ class HeartbeatRecord:
     volatility: VolatilityMetrics
     signal_generated: bool
 
+# ================= DYNAMIC MULTI-PLATFORM SPOT EXTRACTOR =================
+class RealGoldPriceExtractor:
+    """Extracts live SPOT prices with multi-platform outlier detection"""
+    
+    def __init__(self):
+        self.headers = {'User-Agent': 'Mozilla/5.0'}
+        self.price_history = deque(maxlen=5)
+
+    async def __aenter__(self):
+        self.session = aiohttp.ClientSession(headers=self.headers)
+        return self
+
+    async def __aexit__(self, *args):
+        if self.session: 
+            await self.session.close()
+
+    async def get_refined_price(self) -> float:
+        """Fetches from 3 platforms and uses the median to avoid synthetic errors"""
+        platform_prices = []
+
+        # Platform 1: Yahoo Spot
+        try:
+            y_price = yf.Ticker("XAUUSD=X").fast_info.get('last_price')
+            if y_price: 
+                platform_prices.append(float(y_price))
+        except Exception as e:
+            logger.debug(f"Yahoo price failed: {e}")
+
+        # Platform 2: GoldPrice.org (Direct AJAX)
+        try:
+            async with self.session.get("https://data-as-of.goldprice.org/get/ajax/usd") as r:
+                data = await r.json()
+                if data and 'price' in data and len(data['price']) > 0:
+                    gp_price = float(data['price'][0][1])
+                    platform_prices.append(gp_price)
+        except Exception as e:
+            logger.debug(f"GoldPrice.org failed: {e}")
+
+        # Platform 3: Investing.com (Scrape)
+        try:
+            async with self.session.get("https://www.investing.com/currencies/xau-usd", 
+                                       headers={'User-Agent': 'Mozilla/5.0'}) as r:
+                text = await r.text()
+                match = re.search(r'instrument-price-last">([\d,.]+)<', text)
+                if match: 
+                    platform_prices.append(float(match.group(1).replace(',', '')))
+        except Exception as e:
+            logger.debug(f"Investing.com failed: {e}")
+
+        if not platform_prices:
+            logger.error("❌ No spot price data available from any platform.")
+            return None
+
+        # Use the Median of all platforms to ignore one bad/stale source
+        refined_median = float(np.median(platform_prices))
+        
+        # Volatility Check: Ensure the source prices are within 0.5% of each other
+        spread = (max(platform_prices) - min(platform_prices)) / refined_median
+        if spread > 0.005:  # 0.5% deviation is massive for spot gold
+            logger.warning(f"⚠️ High platform deviation ({spread:.4%}). Using median.")
+
+        logger.info(f"✅ Verified Spot Price: ${refined_median:.2f} (Sources: {len(platform_prices)})")
+        return refined_median
+
+    def get_historical_spot_data(self, years: int = 1, interval: str = "1h") -> pd.DataFrame:
+        """Get historical data for technical analysis"""
+        try:
+            # Download historical data
+            ticker = yf.Ticker("XAUUSD=X")
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=years * 365)
+            
+            hist = ticker.history(
+                start=start_date.strftime('%Y-%m-%d'),
+                end=end_date.strftime('%Y-%m-%d'),
+                interval=interval
+            )
+            
+            if hist.empty:
+                logger.warning(f"No historical data for {years} years")
+                return None
+            
+            return hist
+        except Exception as e:
+            logger.error(f"Failed to get historical data: {e}")
+            return None
+
 # ================= 3. ENHANCED MARKET STATUS CHECKER =================
 class EnhancedMarketStatusChecker:
     """Enhanced market status checking with session awareness and volatility protection"""
     
     def __init__(self):
-        self.session = None
+        self.http_session = None
         self.cache_duration = timedelta(minutes=5)
         self._cache = {}
         self.us_holidays = holidays.US(years=datetime.now().year)
@@ -177,21 +264,16 @@ class EnhancedMarketStatusChecker:
             'reason': 'Daily maintenance break'
         })
     
-    async def __aenter__(self):
-        retry_strategy = Retry(
-            total=3,
-            backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504]
-        )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
-        self.session = aiohttp.ClientSession(
+    async def start(self):
+        """Start the HTTP session"""
+        self.http_session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=10)
         )
-        return self
         
-    async def __aexit__(self, *args):
-        if self.session:
-            await self.session.close()
+    async def close(self):
+        """Close the HTTP session"""
+        if self.http_session:
+            await self.http_session.close()
     
     async def get_market_status(self) -> MarketStatus:
         """Get current market status with enhanced session awareness"""
@@ -391,14 +473,16 @@ class EnhancedMarketStatusChecker:
     async def _verify_with_live_sources(self, scheduled_status: MarketStatus, 
                                       now_et: datetime) -> MarketStatus:
         """Verify market status with live data sources"""
-        # (Implementation similar to previous version, but returns enhanced MarketStatus)
-        # For brevity, using simplified version
+        # For now, return scheduled status
+        # In a full implementation, this would check multiple sources
         return scheduled_status
     
     def _get_next_market_open(self, current_time: datetime, is_holiday: bool) -> datetime:
         """Calculate next market opening time"""
-        # (Implementation similar to previous version)
-        return current_time + timedelta(days=1)
+        # Simple implementation
+        next_open = current_time + timedelta(days=1)
+        next_open = next_open.replace(hour=18, minute=0, second=0, microsecond=0)
+        return next_open
 
 # ================= 4. VOLATILITY PROTECTION MODULE =================
 class VolatilityProtection:
@@ -607,6 +691,8 @@ class WeightedSentimentAnalyzer:
         
         async def fetch_source(source: str):
             try:
+                # Use feedparser to parse RSS
+                import feedparser
                 feed = feedparser.parse(source)
                 articles = []
                 
@@ -629,11 +715,13 @@ class WeightedSentimentAnalyzer:
                 logger.debug(f"Failed to fetch {source}: {e}")
                 return []
         
+        # Run all fetches in parallel
         tasks = [fetch_source(source) for source in self.news_sources]
-        results = await asyncio.gather(*tasks)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        for articles in results:
-            all_articles.extend(articles)
+        for result in results:
+            if isinstance(result, list):
+                all_articles.extend(result)
         
         return all_articles
     
@@ -653,6 +741,7 @@ class WeightedSentimentAnalyzer:
         non_gold_articles = [a for a in articles if not a['is_gold_specific']]
         
         if not gold_articles:
+            # No gold-specific articles found
             return SentimentData(
                 score=0.0,
                 sources=list(set(a['source'] for a in articles[:3])),
@@ -871,7 +960,6 @@ class EnhancedTechnicalAnalyzer:
     @staticmethod
     def calculate_rsi(series: pd.Series, period: int = 14) -> float:
         """Calculate RSI"""
-        # (Same implementation as before)
         if len(series) < period + 1:
             return 50.0
         
@@ -895,7 +983,6 @@ class EnhancedTechnicalAnalyzer:
     @staticmethod
     def calculate_macd_histogram(series: pd.Series) -> float:
         """Calculate MACD histogram"""
-        # (Same implementation as before)
         if len(series) < 26:
             return 0.0
         
@@ -910,7 +997,6 @@ class EnhancedTechnicalAnalyzer:
     @staticmethod
     def calculate_bollinger_bands(series: pd.Series, period: int = 20, std_dev: float = 2.0) -> Tuple[float, float, float]:
         """Calculate Bollinger Bands"""
-        # (Same implementation as before)
         if len(series) < period:
             return 0.0, 0.0, 0.0
         
@@ -1323,66 +1409,6 @@ class SessionAwareSignalGenerator:
         
         return ". ".join(summary_parts[:4])
 
-# ================= DYNAMIC MULTI-PLATFORM SPOT EXTRACTOR =================
-class RealGoldPriceExtractor:
-    """Extracts live SPOT prices with multi-platform outlier detection"""
-    
-    def __init__(self):
-        self.session = None
-        self.headers = {'User-Agent': 'Mozilla/5.0'}
-        # We track recent valid prices to prevent sudden 'synthetic' jumps
-        self.price_history = deque(maxlen=5) 
-
-    async def __aenter__(self):
-        self.session = aiohttp.ClientSession(headers=self.headers)
-        return self
-
-    async def __aexit__(self, *args):
-        if self.session: await self.session.close()
-
-    async def get_refined_price(self) -> float:
-        """Fetches from 3 platforms and uses the median to avoid synthetic errors"""
-        platform_prices = []
-
-        # Platform 1: Yahoo Spot
-        try:
-            y_price = yf.Ticker("XAUUSD=X").fast_info.get('last_price')
-            if y_price: platform_prices.append(float(y_price))
-        except: pass
-
-        # Platform 2: GoldPrice.org (Direct AJAX)
-        try:
-            async with self.session.get("https://data-as-of.goldprice.org/get/ajax/usd") as r:
-                data = await r.json()
-                gp_price = float(data.get('price', [[0,0]])[0][1])
-                platform_prices.append(gp_price)
-        except: pass
-
-        # Platform 3: Investing.com (Scrape)
-        try:
-            async with self.session.get("https://www.investing.com/currencies/xau-usd") as r:
-                text = await r.text()
-                match = re.search(r'instrument-price-last">([\d,.]+)<', text)
-                if match: platform_prices.append(float(match.group(1).replace(',', '')))
-        except: pass
-
-        if not platform_prices:
-            logger.error("❌ No spot price data available from any platform.")
-            return None
-
-        # --- DYNAMIC VALIDATION (Replaces 'if price > 1000') ---
-        # 1. Use the Median of all platforms to ignore one bad/stale source
-        refined_median = float(np.median(platform_prices))
-        
-        # 2. Volatility Check: Ensure the source prices are within 0.5% of each other
-        # This prevents the bot from using a 'glitched' price from one site
-        spread = (max(platform_prices) - min(platform_prices)) / refined_median
-        if spread > 0.005: # 0.5% deviation is massive for spot gold
-            logger.warning(f"⚠️ High platform deviation ({spread:.4%}). Using median.")
-
-        logger.info(f"✅ Verified Spot Price: ${refined_median:.2f} (Sources: {len(platform_prices)})")
-        return refined_median
-
 # ================= 8. GOLD TRADING SENTINEL V5.0 =================
 class GoldTradingSentinelV5:
     """Main trading system with all enhancements"""
@@ -1395,14 +1421,13 @@ class GoldTradingSentinelV5:
             except Exception as e:
                 logger.error(f"Supabase connection failed: {e}")
         
-        self.price_extractor = None
+        self.price_extractor = RealGoldPriceExtractor()
         self.market_checker = EnhancedMarketStatusChecker()
         self.volatility_protection = VolatilityProtection()
         self.tech_analyzer = EnhancedTechnicalAnalyzer()
         self.sentiment_analyzer = WeightedSentimentAnalyzer()
         self.signal_generator = SessionAwareSignalGenerator()
         self.signal_history = []
-        self.backtester = None
         
         # Database tables for persistence
         self.db_tables = {
@@ -1412,33 +1437,15 @@ class GoldTradingSentinelV5:
             'volatility': 'volatility_metrics'
         }
     
-    # --- Find this section in your brain_logic.py ---
-
-async def generate_signal(self):
-    # ... previous code ...
-
-    # 4. Multi-Platform Spot Check
-    async with self.price_extractor as extractor:
-        # Change this line to ensure the variable 'price' is defined
-        price = await extractor.get_refined_price() 
-        
-        if not price:
-            logger.error("CRITICAL: All spot price platforms failed.")
-            return None
-
-        # This is where your error was happening (line 1452)
-        # It was looking for 'price' but it might have been named 'current_price'
-        logger.info(f"✅ Gold spot price: ${price:.2f}") 
-
-    # ... rest of the function ...
-        
-        # Print session thresholds
-        print("\n" + "=" * 70)
-        print("🔄 SESSION-AWARE TRADING THRESHOLDS")
-        print("=" * 70)
-        for session, threshold in SESSION_THRESHOLDS.items():
-            print(f"  {session:15} → High Alert: {threshold:5.1f}% confidence")
-        print("=" * 70)
+    async def start(self):
+        """Initialize all components"""
+        await self.market_checker.start()
+        logger.info("✅ Gold Trading Sentinel V5.0 Initialized")
+    
+    async def close(self):
+        """Close all connections"""
+        await self.market_checker.close()
+        logger.info("✅ Gold Trading Sentinel V5.0 Shutdown Complete")
     
     async def generate_signal(self) -> Optional[Signal]:
         """Generate a trading signal with all protections"""
@@ -1456,34 +1463,30 @@ async def generate_signal(self):
                 return self._create_safe_signal(market_status, volatility, reason)
             
             # 4. Extract Real-Time Price
-            # The extractor handles its own aiohttp session internally in V5.0
             async with self.price_extractor as extractor:
-                current_price = await extractor.get_refined_price()
+                price = await extractor.get_refined_price()
                 
-                if not current_price:
+                if not price:
                     logger.error("Failed to get gold price")
                     return None
                 
-                logger.info(f"✅ Gold spot price: ${price:.2f} from {len(sources)} sources")
+                logger.info(f"✅ Gold spot price: ${price:.2f}")
                 logger.info(f"📊 Market Status: {'✅ OPEN' if market_status.is_open else '⏸️ CLOSED'} ({market_status.session})")
                 logger.info(f"⚡ Volatility: {volatility.level} (ATR Ratio: {volatility.range_to_atr_ratio:.2f})")
             
             # 5. Get historical data for indicators
-            hist_data = self.price_extractor.get_historical_spot_data(
-                years=1,
-                interval="1h"
-            )
+            hist_data = self.price_extractor.get_historical_spot_data(years=1, interval="1h")
             
             if hist_data is None or len(hist_data) < 50:
                 logger.warning("Insufficient historical data")
-                return self._create_basic_signal(price, sources, market_status, volatility)
+                return self._create_basic_signal(price, market_status, volatility)
             
             # 6. Calculate technical indicators
             indicators = self.tech_analyzer.calculate_indicators(hist_data)
             
             if not indicators:
                 logger.warning("Failed to calculate indicators")
-                return self._create_basic_signal(price, sources, market_status, volatility)
+                return self._create_basic_signal(price, market_status, volatility)
             
             # 7. Analyze sentiment
             sentiment = await self.sentiment_analyzer.analyze_sentiment()
@@ -1492,12 +1495,8 @@ async def generate_signal(self):
             signal = self.signal_generator.generate_signal(
                 price, indicators, sentiment, market_status, volatility
             )
-            signal.sources = sources
             
-            # 9. Log everything to database
-            await self._log_full_context_to_db(signal, market_status, volatility, sentiment)
-            
-            # 10. Store in history
+            # 9. Store in history
             self.signal_history.append(signal)
             
             return signal
@@ -1523,7 +1522,7 @@ async def generate_signal(self):
             market_status=f"⚠️ Trading Avoided: {reason}"
         )
     
-    def _create_basic_signal(self, price: float, sources: List[str],
+    def _create_basic_signal(self, price: float,
                            market_status: MarketStatus, 
                            volatility: VolatilityMetrics) -> Signal:
         """Create a basic signal when indicators are unavailable"""
@@ -1537,8 +1536,7 @@ async def generate_signal(self):
             is_high_alert=False,
             is_volatility_spike=volatility.is_spike,
             volatility_level=volatility.level,
-            session=market_status.session,
-            sources=sources
+            session=market_status.session
         )
         
         # Add market status info
@@ -1557,76 +1555,6 @@ async def generate_signal(self):
         
         return signal
     
-    async def _log_full_context_to_db(self, signal: Signal, market_status: MarketStatus,
-                                    volatility: VolatilityMetrics, sentiment: SentimentData):
-        """Log full trading context to database"""
-        if not self.supabase:
-            return
-        
-        try:
-            # Log signal
-            signal_entry = {
-                "price": signal.price,
-                "signal": signal.action,
-                "confidence": signal.confidence,
-                "lean": signal.lean,
-                "is_high_alert": signal.is_high_alert,
-                "is_volatility_spike": signal.is_volatility_spike,
-                "volatility_level": signal.volatility_level,
-                "session": signal.session,
-                "market_summary": signal.market_summary,
-                "market_status": signal.market_status or "",
-                "rationale": json.dumps(signal.rationale) if signal.rationale else "{}",
-                "sources": ", ".join(signal.sources) if signal.sources else "",
-                "created_at": signal.timestamp.isoformat()
-            }
-            
-            # Log market status
-            status_entry = {
-                "is_open": market_status.is_open,
-                "session": market_status.session,
-                "is_illiquid": market_status.is_illiquid_period,
-                "spread_widening": market_status.spread_widening,
-                "reason": market_status.reason,
-                "confidence": market_status.confidence,
-                "verified_sources": ", ".join(market_status.verified_sources) if market_status.verified_sources else "",
-                "created_at": signal.timestamp.isoformat()
-            }
-            
-            # Log volatility metrics
-            volatility_entry = {
-                "atr": volatility.atr_14,
-                "current_range": volatility.current_range,
-                "range_to_atr_ratio": volatility.range_to_atr_ratio,
-                "is_spike": volatility.is_spike,
-                "level": volatility.level,
-                "adx": volatility.adx,
-                "trend_strength": volatility.trend_strength,
-                "created_at": signal.timestamp.isoformat()
-            }
-            
-            # Log sentiment
-            sentiment_entry = {
-                "score": sentiment.score,
-                "weighted_score": sentiment.weighted_score,
-                "sources": ", ".join(sentiment.sources),
-                "magnitude": sentiment.magnitude,
-                "confidence": sentiment.confidence,
-                "article_count": sentiment.article_count,
-                "gold_specific": sentiment.gold_specific,
-                "created_at": signal.timestamp.isoformat()
-            }
-            
-            # Insert all records
-            self.supabase.table(self.db_tables['signals']).insert(signal_entry).execute()
-            self.supabase.table(self.db_tables['market_status']).insert(status_entry).execute()
-            self.supabase.table(self.db_tables['volatility']).insert(volatility_entry).execute()
-            
-            logger.info(f"📝 Full context logged to database: {signal.action} ({signal.confidence:.1f}%)")
-            
-        except Exception as e:
-            logger.error(f"Database logging failed: {e}")
-    
     async def run_live_signals(self, interval: int = DEFAULT_INTERVAL):
         """Run live signal generation with all protections"""
         print("\n" + "=" * 70)
@@ -1640,7 +1568,7 @@ async def generate_signal(self):
         print(f"💓 Persistent Market Heartbeat Logging")
         print("=" * 70)
         
-        await self.initialize()
+        await self.start()
         
         last_signal_time = None
         
@@ -1679,6 +1607,8 @@ async def generate_signal(self):
             logger.info("👋 Shutting down Gold Trading Sentinel V5.0")
         except Exception as e:
             logger.error(f"Fatal error in live signals: {e}", exc_info=True)
+        finally:
+            await self.close()
     
     def _display_signal(self, signal: Signal):
         """Display signal with enhanced information"""
@@ -1721,10 +1651,6 @@ async def generate_signal(self):
                 print(f"📊 Market Lean: ↔️  Neutral")
         else:
             print(f"📊 Market Bias: {'⬆️  Bullish' if 'BUY' in signal.action else '⬇️  Bearish'}")
-        
-        # Sources
-        if signal.sources:
-            print(f"📊 Sources: {', '.join(signal.sources[:3])}")
         
         # Rationale highlights
         if signal.rationale and len(signal.rationale) > 0:
@@ -1806,31 +1732,35 @@ async def main():
     
     sentinel = GoldTradingSentinelV5()
     
-    if args.mode == 'live':
-        await sentinel.run_live_signals(interval=args.interval)
+    try:
+        if args.mode == 'live':
+            await sentinel.run_live_signals(interval=args.interval)
+            
+        elif args.mode == 'diagnostics':
+            await sentinel.run_diagnostics()
+            
+        elif args.mode == 'single':
+            print("\n🔍 Generating Single Signal with Enhanced Protections...")
+            print("=" * 70)
+            
+            await sentinel.start()
+            signal = await sentinel.generate_signal()
+            
+            if signal:
+                sentinel._display_signal(signal)
+            else:
+                print("❌ Failed to generate signal")
         
-    elif args.mode == 'diagnostics':
-        await sentinel.run_diagnostics()
-        
-    elif args.mode == 'single':
-        print("\n🔍 Generating Single Signal with Enhanced Protections...")
-        print("=" * 70)
-        
-        await sentinel.initialize()
-        signal = await sentinel.generate_signal()
-        
-        if signal:
-            sentinel._display_signal(signal)
-        else:
-            print("❌ Failed to generate signal")
+        elif args.mode == 'backtest':
+            print("\n📊 Backtesting mode (simplified for V5)")
+            print("=" * 70)
+            print("Note: Full backtesting with all V5 features requires historical")
+            print("volatility and sentiment data which is not available.")
+            print("\nRun in live or diagnostics mode to see the enhanced features.")
+            print("=" * 70)
     
-    elif args.mode == 'backtest':
-        print("\n📊 Backtesting mode (simplified for V5)")
-        print("=" * 70)
-        print("Note: Full backtesting with all V5 features requires historical")
-        print("volatility and sentiment data which is not available.")
-        print("\nRun in live or diagnostics mode to see the enhanced features.")
-        print("=" * 70)
+    finally:
+        await sentinel.close()
     
     return 0
 
