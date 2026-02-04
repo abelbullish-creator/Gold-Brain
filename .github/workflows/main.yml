@@ -28,15 +28,9 @@ jobs:
       - name: Run Gold Bot
         env:
           # Database Secrets
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_URL: ${{https://rxauvodphkqzztoqfpey.supabase.co}}
+          SUPABASE_KEY: ${{sb_secret_WzCYSUVS2eZLjj11DE3xAw_zfCJYQ0V}}
           # Telegram Secrets (Added for Live Alerts)
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python brain_logic.py --mode single
-
-          
-          # Telegram Secrets (Added for Live Alerts)
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_TOKEN: ${{8368825267:AAGVZL1NWc52NzuCzTypC-fxo3rednNjORc}}
+          TELEGRAM_CHAT_ID: ${{302733647}}
         run: python brain_logic.py --mode single
