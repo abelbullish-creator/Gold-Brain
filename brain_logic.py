@@ -531,6 +531,18 @@ async def main():
             sentinel.display_signal(signal)
         else:
             print("❌ Failed to generate signal")
+   
+    elif args.mode == 'single':
+        # 1. Fetching the keys from the environment
+        MY_TOKEN = os.getenv("TELEGRAM_TOKEN")
+        MY_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+        # >>> PLACE THE DEBUG LINE HERE <<<
+        print(f"DEBUG: Token starts with: {MY_TOKEN[:5] if MY_TOKEN else 'MISSING'}")
+        print(f"DEBUG: Chat ID found: {'YES' if MY_CHAT_ID else 'NO'}")
+
+        print("\n🔍 Generating Single Signal...")
+        # ... rest of your code ...
     
     elif args.mode == 'live':
         print("\n" + "=" * 60)
