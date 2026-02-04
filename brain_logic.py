@@ -1,6 +1,6 @@
 """
-Gold Trading Sentinel v5.1 - Six Signal System
-Enhanced version with Telegram notifications and improved signal logic
+Gold Trading Sentinel v5.2 - Six Signal System
+Complete trading bot with Telegram notifications and enhanced signal logic
 Only displays: Strong Buy, Buy, Neutral Lean to Buy, Neutral Lean to Sell, Sell, Strong Sell
 """
 
@@ -107,8 +107,8 @@ class SimplePriceExtractor:
                 ticker = yf.Ticker(ticker_symbol)
                 hist = ticker.history(period="1d", interval="1m")
                 
-                if not hist.empty:
-                    price = hist['Close'].iloc[-1]
+                if not hist.empty and len(hist) > 0:
+                    price = float(hist['Close'].iloc[-1])
                     
                     # Convert ETF prices to approximate gold price
                     if ticker_symbol in ["GLD", "IAU"]:
@@ -181,6 +181,15 @@ class SimpleTechnicalAnalyzer:
         # Price position in Bollinger Bands
         bb_position = "UPPER" if current_price > bb_upper else "LOWER" if current_price < bb_lower else "MIDDLE"
         
+        # Volume analysis (if available)
+        if 'Volume' in price_history.columns:
+            volume_series = price_history['Volume']
+            avg_volume = volume_series.mean()
+            current_volume = volume_series.iloc[-1] if len(volume_series) > 0 else 0
+            volume_ratio = current_volume / avg_volume if avg_volume > 0 else 1.0
+        else:
+            volume_ratio = 1.0
+        
         return {
             'sma_20': float(sma_20) if not pd.isna(sma_20) else 0.0,
             'sma_50': float(sma_50) if not pd.isna(sma_50) else 0.0,
@@ -194,7 +203,8 @@ class SimpleTechnicalAnalyzer:
             'macd_signal': macd_signal,
             'bb_position': bb_position,
             'price_above_sma_20': price_above_sma_20,
-            'price_above_sma_50': price_above_sma_50
+            'price_above_sma_50': price_above_sma_50,
+            'volume_ratio': float(volume_ratio)
         }
     
     def _calculate_rsi(self, series: pd.Series, period: int = 14) -> float:
@@ -494,6 +504,7 @@ class GoldTradingSentinel:
         self.tech_analyzer = SimpleTechnicalAnalyzer()
         self.signal_generator = SixSignalGenerator()
         self.last_signal = None
+        self.signal_count = 0
     
     async def generate_signal(self) -> Optional[Signal]:
         """Generate a trading signal"""
@@ -531,10 +542,11 @@ class GoldTradingSentinel:
                 current_price, indicators, current_price
             )
             
-            # Update last signal
+            # Update last signal and count
             self.last_signal = signal
+            self.signal_count += 1
             
-            logger.info(f"✅ Signal generated: {signal.action} ({signal.confidence:.1f}%) - Price: ${current_price:.2f}")
+            logger.info(f"✅ Signal #{self.signal_count} generated: {signal.action} ({signal.confidence:.1f}%) - Price: ${current_price:.2f}")
             
             return signal
             
@@ -553,7 +565,7 @@ class GoldTradingSentinel:
                     ticker = yf.Ticker(ticker_symbol)
                     hist = ticker.history(period="60d", interval="1h")
                     
-                    if not hist.empty:
+                    if not hist.empty and len(hist) > 50:
                         # Convert ETF to approximate gold price if needed
                         if ticker_symbol in ["GLD"]:
                             hist['Close'] = hist['Close'] * 10
@@ -578,7 +590,7 @@ class GoldTradingSentinel:
     def display_signal(self, signal: Signal):
         """Display signal in clean format"""
         print("\n" + "=" * 70)
-        print("📊 GOLD TRADING SENTINEL v5.1 - SIX SIGNAL SYSTEM")
+        print("📊 GOLD TRADING SENTINEL v5.2 - SIX SIGNAL SYSTEM")
         print("=" * 70)
         
         print(f"🕒 Time: {signal.timestamp.astimezone(TIMEZONE).strftime('%Y-%m-%d %H:%M:%S ET')}")
@@ -625,6 +637,10 @@ class GoldTradingSentinel:
             if macd_hist != 0:
                 macd_signal = "Bullish" if macd_hist > 0 else "Bearish"
                 print(f"   • MACD: {macd_signal} ({macd_hist:.4f})")
+            
+            # Bollinger Bands
+            if 'bb_position' in indicators and indicators['bb_position'] != "MIDDLE":
+                print(f"   • Bollinger Bands: Price at {indicators['bb_position'].lower()} band")
             
             # Price source
             if 'price_source' in indicators:
@@ -694,6 +710,55 @@ class GoldTradingSentinel:
         print("   • Consider position sizing based on confidence")
         print("   • Monitor market conditions continuously")
         print("=" * 70)
+    
+    def format_telegram_message(self, signal: Signal, signal_number: int = None) -> str:
+        """Format signal for Telegram"""
+        emoji_map = {
+            "STRONG_BUY": "🟢🟢🟢",
+            "BUY": "🟢🟢",
+            "NEUTRAL_LEAN_BUY": "🟡",
+            "NEUTRAL_LEAN_SELL": "🟡",
+            "SELL": "🔴🔴",
+            "STRONG_SELL": "🔴🔴🔴"
+        }
+        
+        emoji = emoji_map.get(signal.action, "⚪")
+        
+        if signal_number:
+            title = f"*LIVE GOLD SIGNAL #{signal_number}*"
+        else:
+            title = "*GOLD TRADING SIGNAL*"
+        
+        # Format indicators summary
+        indicators_text = ""
+        if signal.indicators:
+            ind = signal.indicators
+            trend = ind.get('trend', 'NEUTRAL').replace('_', ' ').title()
+            rsi = ind.get('rsi', 50)
+            macd_hist = ind.get('macd_hist', 0)
+            
+            indicators_text = f"""
+*Technical Indicators:*
+• Trend: {trend}
+• RSI: {rsi:.1f}
+• MACD: {'Bullish' if macd_hist > 0 else 'Bearish'} ({macd_hist:.4f})
+"""
+        
+        msg = f"""
+{emoji} {title}
+
+*Signal:* {signal.action}
+*Price:* ${signal.price:.2f}
+*Confidence:* {signal.confidence:.1f}%
+
+{indicators_text}
+*Market Summary:*
+{signal.market_summary}
+
+_Generated at {signal.timestamp.astimezone(TIMEZONE).strftime('%H:%M:%S ET')}_
+#Gold #Trading #Signal
+"""
+        return msg
 
 # ================= MAIN EXECUTION =================
 async def main():
@@ -705,6 +770,10 @@ async def main():
                        help=f'Signal interval in seconds (default: {DEFAULT_INTERVAL})')
     parser.add_argument('--test-telegram', action='store_true',
                        help='Test Telegram connection only')
+    parser.add_argument('--send-telegram', action='store_true',
+                       help='Send signal to Telegram in single mode')
+    parser.add_argument('--quiet', action='store_true',
+                       help='Minimal console output')
     
     args = parser.parse_args()
     
@@ -730,7 +799,7 @@ async def main():
         print(f"✅ Token: {MY_TOKEN[:10]}...")
         print(f"✅ Chat ID: {MY_CHAT_ID}")
         
-        test_msg = "✅ Gold Trading Sentinel v5.1 - Telegram test successful!"
+        test_msg = "✅ Gold Trading Sentinel v5.2 - Telegram test successful!"
         result = await send_telegram_msg(MY_TOKEN, MY_CHAT_ID, test_msg)
         
         if result.get('ok'):
@@ -741,79 +810,78 @@ async def main():
             return 1
     
     if args.mode == 'single':
-        print("\n" + "=" * 60)
-        print("🎯 GOLD TRADING SENTINEL - SIX SIGNAL SYSTEM")
-        print("=" * 60)
-        print("Generrading trading signal...")
-        print("-" * 60)
+        if not args.quiet:
+            print("\n" + "=" * 60)
+            print("🎯 GOLD TRADING SENTINEL - SIX SIGNAL SYSTEM")
+            print("=" * 60)
+            print("Generating trading signal...")
+            print("-" * 60)
         
         signal = await sentinel.generate_signal()
         
         if signal:
-            sentinel.display_signal(signal)
+            if not args.quiet:
+                sentinel.display_signal(signal)
+            else:
+                # Quiet mode - just show basic info
+                print(f"{signal.timestamp.astimezone(TIMEZONE).strftime('%H:%M:%S')} | {signal.action} | ${signal.price:.2f} | {signal.confidence:.1f}%")
             
-            # Optional: Send single signal to Telegram
-            if MY_TOKEN and MY_CHAT_ID:
-                send = input("\n📱 Send this signal to Telegram? (y/n): ")
-                if send.lower() == 'y':
-                    emoji_map = {
-                        "STRONG_BUY": "🟢🟢🟢",
-                        "BUY": "🟢🟢",
-                        "NEUTRAL_LEAN_BUY": "🟡",
-                        "NEUTRAL_LEAN_SELL": "🟡",
-                        "SELL": "🔴🔴",
-                        "STRONG_SELL": "🔴🔴🔴"
-                    }
+            # Send to Telegram if requested
+            if args.send_telegram:
+                if MY_TOKEN and MY_CHAT_ID:
+                    if not args.quiet:
+                        print("\n📱 Sending signal to Telegram...")
                     
-                    emoji = emoji_map.get(signal.action, "⚪")
-                    msg = f"""
-{emoji} *Gold Trading Signal*
-
-*Signal:* {signal.action}
-*Price:* ${signal.price:.2f}
-*Confidence:* {signal.confidence:.1f}%
-
-*Market Summary:*
-{signal.market_summary}
-
-_Generated at {signal.timestamp.astimezone(TIMEZONE).strftime('%H:%M:%S ET')}_
-"""
+                    msg = sentinel.format_telegram_message(signal)
                     result = await send_telegram_msg(MY_TOKEN, MY_CHAT_ID, msg)
+                    
                     if result.get('ok'):
-                        print("✅ Signal sent to Telegram!")
+                        if not args.quiet:
+                            print("✅ Signal sent to Telegram!")
                     else:
-                        print(f"❌ Failed to send: {result}")
+                        if not args.quiet:
+                            print(f"⚠️  Telegram error: {result}")
+                else:
+                    if not args.quiet:
+                        print("❌ Cannot send to Telegram: Missing credentials")
         else:
-            print("❌ Failed to generate signal")
+            if not args.quiet:
+                print("❌ Failed to generate signal")
     
     elif args.mode == 'live':
-        print("\n" + "=" * 60)
-        print("🎯 LIVE GOLD TRADING SIGNALS")
-        print("=" * 60)
+        if not args.quiet:
+            print("\n" + "=" * 60)
+            print("🎯 LIVE GOLD TRADING SIGNALS")
+            print("=" * 60)
         
         # Telegram setup
         telegram_enabled = False
         if MY_TOKEN and MY_CHAT_ID:
-            print(f"✅ Telegram: Token found ({MY_TOKEN[:10]}...)")
-            print(f"✅ Telegram: Chat ID found")
+            if not args.quiet:
+                print(f"✅ Telegram: Token found ({MY_TOKEN[:10]}...)")
+                print(f"✅ Telegram: Chat ID found")
             
             # Test Telegram connection
-            test_msg = "✅ Gold Trading Sentinel v5.1 is now LIVE!"
+            test_msg = "✅ Gold Trading Sentinel v5.2 is now LIVE!"
             result = await send_telegram_msg(MY_TOKEN, MY_CHAT_ID, test_msg)
             
             if result.get('ok'):
                 telegram_enabled = True
-                print("✅ Telegram connection successful!")
+                if not args.quiet:
+                    print("✅ Telegram connection successful!")
             else:
-                print(f"⚠️  Telegram test failed: {result}")
+                if not args.quiet:
+                    print(f"⚠️  Telegram test failed: {result}")
                 telegram_enabled = False
         else:
-            print("⚠️  Telegram credentials not found. Notifications disabled.")
-            print("   Set TELEGRAM_TOKEN and TELEGRAM_CHAT_ID environment variables")
+            if not args.quiet:
+                print("⚠️  Telegram credentials not found. Notifications disabled.")
+                print("   Set TELEGRAM_TOKEN and TELEGRAM_CHAT_ID environment variables")
         
-        print(f"\n📊 Signal interval: {args.interval//60} minutes")
-        print("🔄 Starting live signal generation...")
-        print("-" * 60)
+        if not args.quiet:
+            print(f"\n📊 Signal interval: {args.interval//60} minutes")
+            print("🔄 Starting live signal generation...")
+            print("-" * 60)
         
         signal_count = 0
         try:
@@ -821,73 +889,63 @@ _Generated at {signal.timestamp.astimezone(TIMEZONE).strftime('%H:%M:%S ET')}_
                 signal_count += 1
                 current_time = datetime.now(TIMEZONE).strftime('%H:%M:%S ET')
                 
-                print(f"\n🔄 Signal #{signal_count} at {current_time}")
-                print("-" * 40)
+                if not args.quiet:
+                    print(f"\n🔄 Signal #{signal_count} at {current_time}")
+                    print("-" * 40)
                 
                 signal = await sentinel.generate_signal()
                 
                 if signal:
-                    # Display signal
-                    sentinel.display_signal(signal)
+                    if not args.quiet:
+                        sentinel.display_signal(signal)
+                    else:
+                        # Quiet mode output
+                        print(f"{signal.timestamp.astimezone(TIMEZONE).strftime('%H:%M:%S')} | #{signal_count} | {signal.action} | ${signal.price:.2f} | {signal.confidence:.1f}%")
                     
                     # Send to Telegram if enabled
-                    if telegram_enabled and signal:
-                        # Format Telegram message
-                        emoji_map = {
-                            "STRONG_BUY": "🟢🟢🟢",
-                            "BUY": "🟢🟢",
-                            "NEUTRAL_LEAN_BUY": "🟡",
-                            "NEUTRAL_LEAN_SELL": "🟡",
-                            "SELL": "🔴🔴",
-                            "STRONG_SELL": "🔴🔴🔴"
-                        }
-                        
-                        emoji = emoji_map.get(signal.action, "⚪")
-                        
-                        # Create detailed message
-                        msg = f"""
-{emoji} *LIVE GOLD SIGNAL #{signal_count}*
-
-*Signal:* {signal.action}
-*Price:* ${signal.price:.2f}
-*Confidence:* {signal.confidence:.1f}%
-
-*Market Summary:*
-{signal.market_summary}
-
-_Generated at {current_time}_
-#Gold #Trading #Signal
-"""
+                    if telegram_enabled:
+                        msg = sentinel.format_telegram_message(signal, signal_count)
                         
                         try:
                             result = await send_telegram_msg(MY_TOKEN, MY_CHAT_ID, msg)
                             if result.get('ok'):
-                                print("📡 Signal sent to Telegram!")
+                                if not args.quiet:
+                                    print("📡 Signal sent to Telegram!")
                             else:
-                                print(f"⚠️  Telegram error: {result}")
+                                if not args.quiet:
+                                    print(f"⚠️  Telegram error: {result}")
                         except Exception as e:
-                            print(f"❌ Failed to send Telegram: {e}")
+                            if not args.quiet:
+                                print(f"❌ Failed to send Telegram: {e}")
                 else:
-                    print("❌ Failed to generate signal")
+                    if not args.quiet:
+                        print("❌ Failed to generate signal")
                 
                 # Calculate next update time
                 next_time = datetime.now(TIMEZONE) + timedelta(seconds=args.interval)
                 next_str = next_time.strftime('%H:%M:%S ET')
                 
-                print(f"\n⏳ Next update at {next_str} ({args.interval//60} minutes)")
+                if not args.quiet:
+                    print(f"\n⏳ Next update at {next_str} ({args.interval//60} minutes)")
+                else:
+                    # Quiet mode sleep indicator
+                    mins = args.interval // 60
+                    print(f"Sleeping for {mins} minutes...")
                 
                 # Sleep until next interval
                 await asyncio.sleep(args.interval)
                 
         except KeyboardInterrupt:
-            print("\n\n👋 Stopping live signals...")
+            if not args.quiet:
+                print("\n\n👋 Stopping live signals...")
             
             # Send shutdown message to Telegram
             if telegram_enabled:
                 shutdown_msg = "🛑 Gold Trading Sentinel stopped."
                 await send_telegram_msg(MY_TOKEN, MY_CHAT_ID, shutdown_msg)
             
-            print("✅ Shutdown complete.")
+            if not args.quiet:
+                print("✅ Shutdown complete.")
             return 0
     
     return 0
