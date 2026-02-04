@@ -31,9 +31,9 @@ from scipy import stats
 import holidays
 from collections import deque
 
-async def send_telegram_msg(8368825267:AAGVZL1NWc52NzuCzTypC-fxo3rednNjORc, 302733647, message):
-    url = f"https://api.telegram.org/bot{8368825267:AAGVZL1NWc52NzuCzTypC-fxo3rednNjORc}/sendMessage"
-    payload = {"chat_id": 302733647, "text": message, "parse_mode": "Markdown"}
+async def send_telegram_msg(token, chat_id, message):
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {"chat_id": chat_id, "text": message, "parse_mode": "Markdown"}
     async with aiohttp.ClientSession() as session:
         async with session.post(url, json=payload) as resp:
             return await resp.json()
