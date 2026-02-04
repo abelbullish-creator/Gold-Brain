@@ -1412,10 +1412,25 @@ class GoldTradingSentinelV5:
             'volatility': 'volatility_metrics'
         }
     
-    async def initialize(self):
-        """Initialize the system"""
-        self.price_extractor = RealGoldPriceExtractor()
-        logger.info("Gold Trading Sentinel V5.0 initialized")
+    # --- Find this section in your brain_logic.py ---
+
+async def generate_signal(self):
+    # ... previous code ...
+
+    # 4. Multi-Platform Spot Check
+    async with self.price_extractor as extractor:
+        # Change this line to ensure the variable 'price' is defined
+        price = await extractor.get_refined_price() 
+        
+        if not price:
+            logger.error("CRITICAL: All spot price platforms failed.")
+            return None
+
+        # This is where your error was happening (line 1452)
+        # It was looking for 'price' but it might have been named 'current_price'
+        logger.info(f"✅ Gold spot price: ${price:.2f}") 
+
+    # ... rest of the function ...
         
         # Print session thresholds
         print("\n" + "=" * 70)
