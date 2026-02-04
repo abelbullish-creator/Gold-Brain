@@ -1323,45 +1323,60 @@ class SessionAwareSignalGenerator:
         
         return ". ".join(summary_parts[:4])
 
-# ================= MISSING CLASS: REAL GOLD PRICE EXTRACTOR =================
+# ================= CORRECTED CLASS: SPOT PRICE EXTRACTOR =================
 class RealGoldPriceExtractor:
-    """Extracts and averages gold prices from multiple live web sources"""
+    """Extracts GOLD SPOT prices (XAU/USD) with Context Manager support"""
     
     def __init__(self):
-        self.sources = {
-            'kitco': 'https://www.kitco.com/charts/livegold.html',
-            'investing': 'https://www.investing.com/currencies/xau-usd',
-            'yahoo': 'https://finance.yahoo.com/quote/GC=F'
-        }
+        self.session = None
 
-    async def get_refined_price(self, session: aiohttp.ClientSession) -> float:
-        """Fetches and validates the current gold spot price"""
+    async def __aenter__(self):
+        """Allows use of 'async with RealGoldPriceExtractor() as extractor'"""
+        self.session = aiohttp.ClientSession()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Cleans up the session when the block finishes"""
+        if self.session:
+            await self.session.close()
+
+    async def get_refined_price(self) -> float:
+        """Fetches and validates the current GOLD SPOT price (XAU/USD)"""
+        if not self.session:
+            raise RuntimeError("Extractor session not initialized. Use 'async with'.")
+            
         prices = []
-        
-        # 1. Primary Source: Yahoo Finance (via yfinance)
         try:
-            ticker = yf.Ticker("GC=F")
-            # Use fast_info for lower latency
+            # CHANGED: 'GC=F' (Futures) -> 'XAUUSD=X' (Spot Gold)
+            ticker = yf.Ticker("XAUUSD=X")
+            
+            # Fast info usually works best for live currency pairs
             price = ticker.fast_info.get('last_price')
-            if price and price > 0:
+            
+            # Validation: Spot gold is currently ~2000-3000 range. 
+            # If we get 0 or weird numbers, ignore it.
+            if price and price > 1000:
                 prices.append(price)
+                logger.debug(f"Fetched Spot Price: {price}")
         except Exception as e:
-            logger.debug(f"Yahoo price fetch failed: {e}")
-
-        # 2. Fallback: Direct API or Web Scrape (Simulated for this implementation)
-        # In a full version, you would use aiohttp to scrape Kitco/Investing.com
-        
-        if not prices:
-            # Last resort: Get a larger history block to find the last valid close
-            ticker = yf.Ticker("GC=F")
-            hist = ticker.history(period="1d", interval="1m")
-            if not hist.empty:
-                prices.append(hist['Close'].iloc[-1])
+            logger.debug(f"Yahoo spot price fetch failed: {e}")
 
         if not prices:
-            raise ValueError("Could not retrieve gold price from any source.")
+            # Fallback to historical data if live fetch fails
+            try:
+                # CHANGED: 'GC=F' -> 'XAUUSD=X'
+                ticker = yf.Ticker("XAUUSD=X")
+                hist = ticker.history(period="1d", interval="1m")
+                if not hist.empty:
+                    prices.append(hist['Close'].iloc[-1])
+            except Exception as e:
+                logger.debug(f"History fetch failed: {e}")
 
-        # Return the median/average of collected prices to filter out outliers
+        if not prices:
+            # Final Fallback: Silver-to-Gold ratio or other correlation could go here, 
+            # but for now we return None to be safe.
+            return None
+
         return float(np.mean(prices))
 
 # ================= 8. GOLD TRADING SENTINEL V5.0 =================
