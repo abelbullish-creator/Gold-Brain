@@ -1,43 +1,30 @@
+<DOCUMENT filename="main.yml">
 name: Gold Sentinel Hybrid V14
-
 on:
-  schedule:
-    # Runs every 15 minutes
-    - cron: '*/15 * * * *'
-  workflow_dispatch: # Allows manual triggering from the GitHub Actions tab
+schedule:
+Runs every 15 minutes
+
+cron: '*/15 * * * *'
+workflow_dispatch: # Allows manual triggering from the GitHub Actions tab
 
 jobs:
-  run-logic:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+run-logic:
+runs-on: ubuntu-latest
+steps:
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-          cache: 'pip'
+name: Checkout code
+uses: actions/checkout@v4
+name: Set up Python
+uses: actions/setup-python@v5
+with:
+python-version: '3.10'
+cache: 'pip'
+name: Install Dependencies
+run: |
+python -m pip install --upgrade pipCore Data & Web Scrapingpip install numpy pandas scipy pytz beautifulsoup4 aiohttp requests feedparser holidaysMachine Learning & AIpip install torch scikit-learn joblib xgboostNotifications, API & Databasepip install python-telegram-bot fastapi uvicorn pydanticVisualizationpip install matplotlib seaborn
+name: Run Gold Sentinel V14
+env:Notification SecretsTELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}Optional Data SecretsALPHA_VANTAGE_KEY: ${{ secrets.ALPHA_VANTAGE_KEY }}
+TWELVEDATA_KEY: ${{ secrets.TWELVEDATA_KEY }}Run in single mode for GitHub Actions cron jobrun: python brain_logic.py --mode single
 
-      - name: Install Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          # Core Data & Web Scraping
-          pip install numpy pandas scipy pytz beautifulsoup4 aiohttp requests feedparser holidays
-          # Machine Learning & AI
-          pip install torch scikit-learn joblib
-          # Notifications, API & Database
-          pip install python-telegram-bot fastapi uvicorn pydantic
-          # Visualization
-          pip install matplotlib seaborn
-
-      - name: Run Gold Sentinel V14
-        env:
-          # Notification Secrets
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          # Optional Data Secrets
-          ALPHA_VANTAGE_KEY: ${{ secrets.ALPHA_VANTAGE_KEY }}
-          TWELVEDATA_KEY: ${{ secrets.TWELVEDATA_KEY }}
-        # Run in single mode for GitHub Actions cron job
-        run: python brain_logic.py --mode single --quiet
+</DOCUMENT>
