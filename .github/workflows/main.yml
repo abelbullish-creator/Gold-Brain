@@ -1,9 +1,9 @@
-name: Gold Sentinel Hybrid Automation V11
+name: Gold Sentinel Hybrid V11 Fix
 
 on:
   schedule:
-    - cron: '*/15 * * * *'  # በየ 15 ደቂቃው ይረዳል
-  workflow_dispatch:      # በእጅ ለማስጀመር እንዲቻል
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
 
 jobs:
   run-logic:
@@ -16,10 +16,9 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          cache: 'pip' # ፍጥነትን ለመጨመር
+          cache: 'pip'
 
-      # --- ደረጃ 1: TA-Lib C-Library መጫን (ለ v11.0 AI እጅግ አስፈላጊ ነው) ---
-      - name: Install TA-Lib C-Dependencies
+      - name: Install TA-Lib C-Library
         run: |
           wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
           tar -xzf ta-lib-0.4.0-src.tar.gz
@@ -29,35 +28,19 @@ jobs:
           sudo make install
           cd ..
 
-      # --- ደረጃ 2: ሁሉንም አስፈላጊ AI እና የንግድ ቤተ-መጻሕፍት መጫን ---
       - name: Install All Dependencies
         run: |
           python -m pip install --upgrade pip
-          
-          # AI እና ማሽን ለርኒንግ (v11.0)
-          pip install torch xgboost lightgbm catboost optuna
-          pip install scikit-learn joblib statsmodels
-          
-          # የግራፍ እና የስታቲስቲክስ ስራዎች
-          pip install seaborn matplotlib
-          
-          # የንግድ እና የዳታ መረጃዎች
-          pip install ta-lib pandas numpy yfinance aiohttp schedule
-          
-          # የዜና እና የዳታቤዝ ስራዎች
-          pip install textblob feedparser supabase scipy holidays pytz beautifulsoup4
-          
-          # ለ Sentiment Analysis አስፈላጊ ፋይሎችን ማውረድ
+          pip install torch xgboost lightgbm catboost optuna scikit-learn joblib
+          pip install seaborn matplotlib statsmodels ta-lib
+          pip install pandas numpy yfinance aiohttp schedule pytz
+          pip install textblob feedparser supabase scipy holidays beautifulsoup4
           python -m textblob.download_corpora
 
-      # --- ደረጃ 3: የ Hybrid ቦቱን ማስጀመር ---
       - name: Run Hybrid Gold Bot
         env:
-          # ዳታቤዝ ሚስጥሮች (Secrets)
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          # ቴሌግራም ሚስጥሮች
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        # በ "single" ሞድ ምልክት (Signal) ብቻ እንዲልክ ያደርገዋል
         run: python brain_logic.py --mode single
