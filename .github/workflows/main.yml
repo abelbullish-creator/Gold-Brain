@@ -18,7 +18,7 @@ jobs:
           python-version: '3.10'
           cache: 'pip'
 
-      # --- CRITICAL: Install TA-Lib C-Library (Required for v11 AI) ---
+      # --- STEP 1: Install TA-Lib C-Library (Required for v11 Indicators) ---
       - name: Install TA-Lib C-Dependencies
         run: |
           wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
@@ -29,24 +29,30 @@ jobs:
           sudo make install
           cd ..
 
-      # --- Install AI, Trading, & Previous Dependencies ---
+      # --- STEP 2: Install All AI, Database, and Trading Dependencies ---
       - name: Install All Dependencies
         run: |
           python -m pip install --upgrade pip
-          # AI & Professional Libraries (v11.0)
-          pip install torch xgboost lightgbm catboost optuna ta-lib statsmodels
-          # Trading & Utility Libraries (v9.0 & Previous)
-          pip install pandas numpy yfinance aiohttp textblob feedparser supabase scipy holidays pytz beautifulsoup4
+          
+          # New AI & Machine Learning Libraries (Fixes the sklearn error)
+          pip install scikit-learn joblib torch xgboost lightgbm catboost optuna statsmodels
+          
+          # Technical Analysis & Trading Libraries
+          pip install ta-lib pandas numpy yfinance aiohttp pytz
+          
+          # Previous Database & Utility Libraries
+          pip install supabase textblob feedparser beautifulsoup4 scipy holidays
+          
           # Download TextBlob Corpora for Sentiment Analysis
           python -m textblob.download_corpora
 
+      # --- STEP 3: Run the Hybrid Brain ---
       - name: Run Hybrid Gold Bot
         env:
-          # Database Secrets (from your v5 YAML)
+          # Database Secrets
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          # Telegram Secrets (for Live Signals)
+          # Telegram Secrets
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        # Runs your brain_logic.py which handles the Hybrid v9+v11 logic
         run: python brain_logic.py --mode single
