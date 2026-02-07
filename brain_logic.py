@@ -2729,6 +2729,38 @@ class GoldTradingSentinelV14:
         except Exception as e:
             logger.error(f"Error during shutdown: {e}")
 
+# ================= INSTALLATION HELPERS =================
+def install_requirements():
+    """Install required packages"""
+    requirements = [
+        "numpy",
+        "pandas",
+        "aiohttp",
+        "requests",
+        "beautifulsoup4",
+        "feedparser",
+        "pytz",
+        "scipy",
+        "holidays",
+        "torch",
+        "scikit-learn",
+        "joblib",
+        "matplotlib",
+        "seaborn",
+        "python-telegram-bot",
+        "fastapi",
+        "uvicorn",
+        "pydantic"
+    ]
+    
+    print("\n📦 Installing required packages...")
+    
+    for package in requirements:
+        print(f"Installing {package}...")
+        os.system(f"pip install {package}")
+    
+    print("\n✅ Installation complete!")
+
 # ================= MAIN EXECUTION =================
 async def main():
     """Main execution function"""
@@ -2737,10 +2769,10 @@ async def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python gold_sentinel.py --mode single          # Generate single signal
-  python gold_sentinel.py --mode live            # Run in live mode
-  python gold_sentinel.py --mode backtest        # Run backtest
-  python gold_sentinel.py --test-system          # Test system components
+  python brain_logic.py --mode single          # Generate single signal
+  python brain_logic.py --mode live            # Run in live mode
+  python brain_logic.py --mode backtest        # Run backtest
+  python brain_logic.py --test-system          # Test system components
         """
     )
     
@@ -2768,8 +2800,15 @@ Examples:
                        help='Minimal console output')
     parser.add_argument('--debug', action='store_true',
                        help='Enable debug logging')
+    parser.add_argument('--install', action='store_true',
+                       help='Install required packages')
     
     args = parser.parse_args()
+    
+    # Install requirements if requested
+    if args.install:
+        install_requirements()
+        return
     
     # Configure logging
     if args.quiet:
@@ -2869,71 +2908,11 @@ Examples:
         traceback.print_exc()
         sys.exit(1)
 
-# ================= INSTALLATION HELPERS =================
-def install_requirements():
-    """Install required packages"""
-    requirements = [
-        "numpy",
-        "pandas",
-        "aiohttp",
-        "requests",
-        "beautifulsoup4",
-        "feedparser",
-        "pytz",
-        "scipy",
-        "holidays",
-        "torch",
-        "scikit-learn",
-        "joblib",
-        "matplotlib",
-        "seaborn",
-        "python-telegram-bot",
-        "fastapi",
-        "uvicorn",
-        "pydantic"
-    ]
-    import subprocess
-    for req in requirements:
-        try:
-            print(f"Installing {req}...")
-            subprocess.check_call([sys.executable, "-m", "pip", "install", req])
-        except Exception as e:
-            print(f"Error installing {req}: {e}")
-
-async def main():
-    # Setup argument parser
-    parser = argparse.ArgumentParser(description='Gold Sentinel Hybrid V14')
-    parser.add_argument('--mode', type=str, default='single', choices=['single', 'live', 'backtest', 'test'])
-    parser.add_argument('--interval', type=int, default=3600)
-    parser.add_argument('--backtest_days', type=int, default=30)
-    parser.add_argument('--initial_capital', type=float, default=10000.0)
-    parser.add_argument('--install', action='store_true')
-    
-    args = parser.parse_args()
-
-    if args.install:
-        install_requirements()
-
-    # Initialize and run
-    version_manager = DataVersionManager()
-    sentinel = GoldSentinel(version_manager)
-    
-    try:
-        if args.mode == 'test':
-            await sentinel.run_system_test()
-        elif args.mode == 'single':
-            await sentinel.run_single_signal()
-        elif args.mode == 'live':
-            await sentinel.run_live_mode(args.interval)
-        elif args.mode == 'backtest':
-            await sentinel.run_backtest(args.backtest_days, args.initial_capital)
-    except Exception as e:
-        logger.error(f"Fatal error in main: {e}")
-        sys.exit(1)
-
+# ================= EXECUTION =================
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\n🛑 Shutdown requested")
-       
+    # Windows asyncio policy
+    if sys.platform == 'win32':
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    
+    # Run main
+    asyncio.run(main())
