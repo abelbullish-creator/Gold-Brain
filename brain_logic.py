@@ -2888,4 +2888,52 @@ def install_requirements():
         "matplotlib",
         "seaborn",
         "python-telegram-bot",
+        "fastapi",
+        "uvicorn",
+        "pydantic"
+    ]
+    import subprocess
+    for req in requirements:
+        try:
+            print(f"Installing {req}...")
+            subprocess.check_call([sys.executable, "-m", "pip", "install", req])
+        except Exception as e:
+            print(f"Error installing {req}: {e}")
+
+async def main():
+    # Setup argument parser
+    parser = argparse.ArgumentParser(description='Gold Sentinel Hybrid V14')
+    parser.add_argument('--mode', type=str, default='single', choices=['single', 'live', 'backtest', 'test'])
+    parser.add_argument('--interval', type=int, default=3600)
+    parser.add_argument('--backtest_days', type=int, default=30)
+    parser.add_argument('--initial_capital', type=float, default=10000.0)
+    parser.add_argument('--install', action='store_true')
+    
+    args = parser.parse_args()
+
+    if args.install:
+        install_requirements()
+
+    # Initialize and run
+    version_manager = DataVersionManager()
+    sentinel = GoldSentinel(version_manager)
+    
+    try:
+        if args.mode == 'test':
+            await sentinel.run_system_test()
+        elif args.mode == 'single':
+            await sentinel.run_single_signal()
+        elif args.mode == 'live':
+            await sentinel.run_live_mode(args.interval)
+        elif args.mode == 'backtest':
+            await sentinel.run_backtest(args.backtest_days, args.initial_capital)
+    except Exception as e:
+        logger.error(f"Fatal error in main: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n🛑 Shutdown requested")
        
