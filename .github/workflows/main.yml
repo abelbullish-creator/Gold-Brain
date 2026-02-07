@@ -1,4 +1,4 @@
-name: Gold Sentinel Hybrid V11 Fix
+name: Gold Sentinel Hybrid V14
 
 on:
   schedule:
@@ -23,24 +23,21 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           # Core Data & Web Scraping
-          pip install numpy pandas scipy pytz beautifulsoup4 aiohttp requests feedparser holidays schedule
+          pip install numpy pandas scipy pytz beautifulsoup4 aiohttp requests feedparser holidays
           # Machine Learning & AI
-          pip install torch xgboost scikit-learn joblib
+          pip install torch scikit-learn joblib
           # Notifications, API & Database
-          pip install python-telegram-bot fastapi uvicorn pydantic supabase
-          # Visualization (Required by script imports)
+          pip install python-telegram-bot fastapi uvicorn pydantic
+          # Visualization
           pip install matplotlib seaborn
 
-      - name: Run Hybrid Gold Bot
+      - name: Run Gold Sentinel V14
         env:
-          # Database Secrets
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           # Notification Secrets
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          # Optional Data Secrets (If used by your script)
+          # Optional Data Secrets
           ALPHA_VANTAGE_KEY: ${{ secrets.ALPHA_VANTAGE_KEY }}
           TWELVEDATA_KEY: ${{ secrets.TWELVEDATA_KEY }}
-        # The script is executed in single-run mode for the cron job
-        run: python brain_logic.py --mode single
+        # Run in single mode for GitHub Actions cron job
+        run: python brain_logic.py --mode single --quiet
