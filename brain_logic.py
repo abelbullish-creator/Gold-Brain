@@ -34,7 +34,6 @@ import holidays
 from collections import deque, defaultdict
 from bs4 import BeautifulSoup
 from pathlib import Path
-import schedule
 import concurrent.futures
 from contextlib import contextmanager
 from enum import Enum
