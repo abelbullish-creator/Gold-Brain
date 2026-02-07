@@ -1,9 +1,9 @@
-name: Gold Sentinel Hybrid Automation
+name: Gold Sentinel Hybrid Automation V11
 
 on:
   schedule:
-    - cron: '*/15 * * * *'  # Runs every 15 minutes
-  workflow_dispatch:      # Allows manual triggering
+    - cron: '*/15 * * * *'  # በየ 15 ደቂቃው ይረዳል
+  workflow_dispatch:      # በእጅ ለማስጀመር እንዲቻል
 
 jobs:
   run-logic:
@@ -16,9 +16,9 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-          cache: 'pip'
+          cache: 'pip' # ፍጥነትን ለመጨመር
 
-      # --- STEP 1: Install TA-Lib C-Library ---
+      # --- ደረጃ 1: TA-Lib C-Library መጫን (ለ v11.0 AI እጅግ አስፈላጊ ነው) ---
       - name: Install TA-Lib C-Dependencies
         run: |
           wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
@@ -29,28 +29,35 @@ jobs:
           sudo make install
           cd ..
 
-      # --- STEP 2: Install All AI, Viz, and Trading Dependencies ---
+      # --- ደረጃ 2: ሁሉንም አስፈላጊ AI እና የንግድ ቤተ-መጻሕፍት መጫን ---
       - name: Install All Dependencies
         run: |
           python -m pip install --upgrade pip
           
-          # Fix for seaborn, sklearn, and matplotlib errors
-          pip install scikit-learn joblib seaborn matplotlib statsmodels
+          # AI እና ማሽን ለርኒንግ (v11.0)
+          pip install torch xgboost lightgbm catboost optuna
+          pip install scikit-learn joblib statsmodels
           
-          # AI & Professional Libraries (v11.0)
-          pip install torch xgboost lightgbm catboost optuna ta-lib
+          # የግራፍ እና የስታቲስቲክስ ስራዎች
+          pip install seaborn matplotlib
           
-          # Trading & Previous Database/Utility Libraries
-          pip install pandas numpy yfinance aiohttp textblob feedparser supabase scipy holidays pytz beautifulsoup4
+          # የንግድ እና የዳታ መረጃዎች
+          pip install ta-lib pandas numpy yfinance aiohttp schedule
           
-          # Download TextBlob Corpora for Sentiment Analysis
+          # የዜና እና የዳታቤዝ ስራዎች
+          pip install textblob feedparser supabase scipy holidays pytz beautifulsoup4
+          
+          # ለ Sentiment Analysis አስፈላጊ ፋይሎችን ማውረድ
           python -m textblob.download_corpora
 
-      # --- STEP 3: Run the Hybrid Brain ---
+      # --- ደረጃ 3: የ Hybrid ቦቱን ማስጀመር ---
       - name: Run Hybrid Gold Bot
         env:
+          # ዳታቤዝ ሚስጥሮች (Secrets)
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          # ቴሌግራም ሚስጥሮች
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        # በ "single" ሞድ ምልክት (Signal) ብቻ እንዲልክ ያደርገዋል
         run: python brain_logic.py --mode single
