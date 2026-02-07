@@ -18,7 +18,7 @@ jobs:
           python-version: '3.10'
           cache: 'pip'
 
-      # --- STEP 1: Install TA-Lib C-Library (Required for v11 Indicators) ---
+      # --- STEP 1: Install TA-Lib C-Library ---
       - name: Install TA-Lib C-Dependencies
         run: |
           wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
@@ -29,19 +29,19 @@ jobs:
           sudo make install
           cd ..
 
-      # --- STEP 2: Install All AI, Database, and Trading Dependencies ---
+      # --- STEP 2: Install All AI, Viz, and Trading Dependencies ---
       - name: Install All Dependencies
         run: |
           python -m pip install --upgrade pip
           
-          # New AI & Machine Learning Libraries (Fixes the sklearn error)
-          pip install scikit-learn joblib torch xgboost lightgbm catboost optuna statsmodels
+          # Fix for seaborn, sklearn, and matplotlib errors
+          pip install scikit-learn joblib seaborn matplotlib statsmodels
           
-          # Technical Analysis & Trading Libraries
-          pip install ta-lib pandas numpy yfinance aiohttp pytz
+          # AI & Professional Libraries (v11.0)
+          pip install torch xgboost lightgbm catboost optuna ta-lib
           
-          # Previous Database & Utility Libraries
-          pip install supabase textblob feedparser beautifulsoup4 scipy holidays
+          # Trading & Previous Database/Utility Libraries
+          pip install pandas numpy yfinance aiohttp textblob feedparser supabase scipy holidays pytz beautifulsoup4
           
           # Download TextBlob Corpora for Sentiment Analysis
           python -m textblob.download_corpora
@@ -49,10 +49,8 @@ jobs:
       # --- STEP 3: Run the Hybrid Brain ---
       - name: Run Hybrid Gold Bot
         env:
-          # Database Secrets
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          # Telegram Secrets
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python brain_logic.py --mode single
