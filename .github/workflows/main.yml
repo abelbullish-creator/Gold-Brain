@@ -1,9 +1,9 @@
-name: Gold Brain Automation V5
+name: Gold Sentinel Hybrid Automation
 
 on:
   schedule:
     - cron: '*/15 * * * *'  # Runs every 15 minutes
-  workflow_dispatch:        # Allows manual triggering
+  workflow_dispatch:      # Allows manual triggering
 
 jobs:
   run-logic:
@@ -18,19 +18,35 @@ jobs:
           python-version: '3.10'
           cache: 'pip'
 
-      - name: Install dependencies
+      # --- CRITICAL: Install TA-Lib C-Library (Required for v11 AI) ---
+      - name: Install TA-Lib C-Dependencies
+        run: |
+          wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
+          tar -xzf ta-lib-0.4.0-src.tar.gz
+          cd ta-lib/
+          ./configure --prefix=/usr
+          make
+          sudo make install
+          cd ..
+
+      # --- Install AI, Trading, & Previous Dependencies ---
+      - name: Install All Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas numpy yfinance aiohttp textblob feedparser supabase scipy holidays pytz
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          # AI & Professional Libraries (v11.0)
+          pip install torch xgboost lightgbm catboost optuna ta-lib statsmodels
+          # Trading & Utility Libraries (v9.0 & Previous)
+          pip install pandas numpy yfinance aiohttp textblob feedparser supabase scipy holidays pytz beautifulsoup4
+          # Download TextBlob Corpora for Sentiment Analysis
           python -m textblob.download_corpora
 
-      - name: Run Gold Bot
+      - name: Run Hybrid Gold Bot
         env:
-          # Database Secrets
+          # Database Secrets (from your v5 YAML)
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          # Telegram Secrets (Added for Live Alerts)
+          # Telegram Secrets (for Live Signals)
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        # Runs your brain_logic.py which handles the Hybrid v9+v11 logic
         run: python brain_logic.py --mode single
