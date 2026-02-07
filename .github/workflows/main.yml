@@ -2,8 +2,9 @@ name: Gold Sentinel Hybrid V11 Fix
 
 on:
   schedule:
+    # Runs every 15 minutes
     - cron: '*/15 * * * *'
-  workflow_dispatch:
+  workflow_dispatch: # Allows manual triggering from the GitHub Actions tab
 
 jobs:
   run-logic:
@@ -18,29 +19,28 @@ jobs:
           python-version: '3.10'
           cache: 'pip'
 
-      - name: Install TA-Lib C-Library
-        run: |
-          wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz
-          tar -xzf ta-lib-0.4.0-src.tar.gz
-          cd ta-lib/
-          ./configure --prefix=/usr
-          make
-          sudo make install
-          cd ..
-
-      - name: Install All Dependencies
+      - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install torch xgboost lightgbm catboost optuna scikit-learn joblib
-          pip install seaborn matplotlib statsmodels ta-lib
-          pip install pandas numpy yfinance aiohttp schedule pytz
-          pip install textblob feedparser supabase scipy holidays beautifulsoup4
-          python -m textblob.download_corpora
+          # Core Data & Web Scraping
+          pip install numpy pandas scipy pytz beautifulsoup4 aiohttp requests feedparser holidays schedule
+          # Machine Learning & AI
+          pip install torch xgboost scikit-learn joblib
+          # Notifications, API & Database
+          pip install python-telegram-bot fastapi uvicorn pydantic supabase
+          # Visualization (Required by script imports)
+          pip install matplotlib seaborn
 
       - name: Run Hybrid Gold Bot
         env:
+          # Database Secrets
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          # Notification Secrets
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # Optional Data Secrets (If used by your script)
+          ALPHA_VANTAGE_KEY: ${{ secrets.ALPHA_VANTAGE_KEY }}
+          TWELVEDATA_KEY: ${{ secrets.TWELVEDATA_KEY }}
+        # The script is executed in single-run mode for the cron job
         run: python brain_logic.py --mode single
